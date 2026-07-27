@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Environment variables
+.env
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+
+# Backup git repos
+.git-backend-backup
+.git-frontend-backup
