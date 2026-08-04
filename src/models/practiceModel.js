@@ -1,0 +1,242 @@
+const pool = require('../config/db');
+
+const QT_TABLE = '`题库1`';
+
+// 客观题题型（1判断 2单选 3多选 4填空），5简答 6程序为非客观题
+const OBJECTIVE_TYPES = [1, 2, 3, 4];
+
+// 随机抽题（按条件）
+const randomPick = async ({ 章节, 题型, 难度, count }) => {
+    const conditions = [];
+    const params = [];
+    if (章节 !== undefined && 章节 !== '' && 章节 !== null) {
+        conditions.push('章节 = ?');
+        params.push(章节);
+    }
+    if (题型 !== undefined && 题型 !== '' && 题型 !== null) {
+        conditions.push('题型 = ?');
+        params.push(Number(题型));
+    }
+    if (难度 !== undefined && 难度 !== '' && 难度 !== null) {
+        conditions.push('难度 = ?');
+        params.push(难度);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const [rows] = await pool.query(
+        `SELECT * FROM ${QT_TABLE} ${where} ORDER BY RAND() LIMIT ?`,
+        [...params, Number(count)]
+    );
+    return rows;
+};
+
+// 统计客观题数量
+const countObjective = (questions) => {
+    return questions.filter((q) => OBJECTIVE_TYPES.includes(Number(q.题型))).length;
+};
+
+// 创建试卷（事务：写 exams + exam_questions）
+const createExam = async ({ userId, title, chapter, questionType, difficulty, questions }) => {
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+
+        const objectiveCount = countObjective(questions);
+        const [examResult] = await conn.query(
+            `INSERT INTO \`exams\` (user_id, title, total_count, objective_count, chapter, question_type, difficulty) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [userId, title, questions.length, objectiveCount, chapter || null, questionType || null, difficulty || null]
+        );
+        const examId = examResult.insertId;
+
+        const values = questions.map((q, i) => [examId, q.id, i + 1]);
+        await conn.query(
+            `INSERT INTO \`exam_questions\` (exam_id, question_id, sort_order) VALUES ?`,
+            [values]
+        );
+
+        await conn.commit();
+        return { examId, objectiveCount };
+    } catch (err) {
+        await conn.rollback();
+        throw err;
+    } finally {
+        conn.release();
+    }
+};
+
+// 查询用户试卷列表
+const findExamsByUser = async (userId, { page = 1, pageSize = 20 } = {}) => {
+    const offset = (page - 1) * pageSize;
+    const [countRows] = await pool.query(
+        'SELECT COUNT(*) AS total FROM `exams` WHERE user_id = ?', [userId]
+    );
+    const total = countRows[0].total;
+    const [rows] = await pool.query(
+        `SELECT e.*, (SELECT COUNT(*) FROM \`exam_records\` r WHERE r.exam_id = e.id) AS attempt_count
+         FROM \`exams\` e WHERE e.user_id = ? ORDER BY e.id DESC LIMIT ? OFFSET ?`,
+        [userId, pageSize, offset]
+    );
+    return { rows, total };
+};
+
+// 查询试卷详情（含题目列表，带题库原题信息）
+const findExamById = async (examId) => {
+    const [examRows] = await pool.query('SELECT * FROM `exams` WHERE id = ?', [examId]);
+    if (examRows.length === 0) return null;
+    const exam = examRows[0];
+
+    const [qRows] = await pool.query(
+        `SELECT eq.sort_order, q.* FROM \`exam_questions\` eq
+         LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE eq.exam_id = ? ORDER BY eq.sort_order`,
+        [examId]
+    );
+    exam.questions = qRows;
+    return exam;
+};
+
+// 批量查题（用于提交评分时获取正确答案）
+const findQuestionsByIds = async (ids) => {
+    if (!ids || ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(', ');
+    const [rows] = await pool.query(
+        `SELECT id, 题型, 题目, 选项, 答案, 解析 FROM ${QT_TABLE} WHERE id IN (${placeholders})`,
+        ids
+    );
+    return rows;
+};
+
+// 写入答题记录（事务：写 exam_records + exam_answers）
+const createRecord = async (data) => {
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+
+        const [recordResult] = await conn.query(
+            `INSERT INTO \`exam_records\`
+             (exam_id, user_id, started_at, submitted_at, duration_seconds,
+              total_count, answered_count, correct_count, wrong_count, skipped_count,
+              objective_total, objective_correct, accuracy, score)
+             VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                data.examId, data.userId, data.startedAt, data.durationSeconds,
+                data.totalCount, data.answeredCount, data.correctCount, data.wrongCount, data.skippedCount,
+                data.objectiveTotal, data.objectiveCorrect, data.accuracy, data.score
+            ]
+        );
+        const recordId = recordResult.insertId;
+
+        const values = data.answers.map((a) => [
+            recordId, a.questionId, a.questionType, a.userAnswer,
+            a.correctAnswer, a.isObjective, a.isCorrect
+        ]);
+        if (values.length > 0) {
+            await conn.query(
+                `INSERT INTO \`exam_answers\` (record_id, question_id, question_type, user_answer, correct_answer, is_objective, is_correct) VALUES ?`,
+                [values]
+            );
+        }
+
+        await conn.commit();
+        return recordId;
+    } catch (err) {
+        await conn.rollback();
+        throw err;
+    } finally {
+        conn.release();
+    }
+};
+
+// 查询用户答题记录列表
+const findRecordsByUser = async (userId, { page = 1, pageSize = 20 } = {}) => {
+    const offset = (page - 1) * pageSize;
+    const [countRows] = await pool.query(
+        'SELECT COUNT(*) AS total FROM `exam_records` WHERE user_id = ?', [userId]
+    );
+    const total = countRows[0].total;
+    const [rows] = await pool.query(
+        `SELECT r.*, e.title AS exam_title
+         FROM \`exam_records\` r
+         LEFT JOIN \`exams\` e ON r.exam_id = e.id
+         WHERE r.user_id = ? ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?`,
+        [userId, pageSize, offset]
+    );
+    return { rows, total };
+};
+
+// 查询答题记录详情（含每题对错）
+const findRecordById = async (recordId) => {
+    const [recordRows] = await pool.query(
+        `SELECT r.*, e.title AS exam_title FROM \`exam_records\` r
+         LEFT JOIN \`exams\` e ON r.exam_id = e.id WHERE r.id = ?`,
+        [recordId]
+    );
+    if (recordRows.length === 0) return null;
+    const record = recordRows[0];
+
+    const [answerRows] = await pool.query(
+        `SELECT a.*, q.题目, q.选项, q.解析 FROM \`exam_answers\` a
+         LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE a.record_id = ? ORDER BY a.id`,
+        [recordId]
+    );
+    record.answers = answerRows;
+    return record;
+};
+
+// 统计：总览 + 近期趋势 + 按题型正确率
+const getStatistics = async (userId) => {
+    // 总览
+    const [overview] = await pool.query(
+        `SELECT
+            COUNT(*) AS total_attempts,
+            COALESCE(ROUND(AVG(accuracy), 2), 0) AS avg_accuracy,
+            COALESCE(ROUND(MAX(accuracy), 2), 0) AS max_accuracy,
+            COALESCE(ROUND(MIN(accuracy), 2), 0) AS min_accuracy,
+            COALESCE(SUM(total_count), 0) AS total_questions,
+            COALESCE(SUM(correct_count), 0) AS total_correct
+         FROM \`exam_records\` WHERE user_id = ?`,
+        [userId]
+    );
+
+    // 近 20 次趋势
+    const [trend] = await pool.query(
+        `SELECT id, exam_id, accuracy, score, total_count, correct_count, submitted_at
+         FROM \`exam_records\` WHERE user_id = ?
+         ORDER BY submitted_at DESC LIMIT 20`,
+        [userId]
+    );
+    trend.reverse(); // 时间正序展示趋势
+
+    // 按题型正确率
+    const [byType] = await pool.query(
+        `SELECT
+            a.question_type,
+            COUNT(*) AS total,
+            SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) AS correct,
+            ROUND(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS accuracy
+         FROM \`exam_answers\` a
+         INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         WHERE r.user_id = ? AND a.is_objective = 1
+         GROUP BY a.question_type ORDER BY a.question_type`,
+        [userId]
+    );
+
+    return {
+        overview: overview[0] || {},
+        trend,
+        byType,
+    };
+};
+
+module.exports = {
+    randomPick,
+    createExam,
+    findExamsByUser,
+    findExamById,
+    findQuestionsByIds,
+    createRecord,
+    findRecordsByUser,
+    findRecordById,
+    getStatistics,
+    OBJECTIVE_TYPES,
+};

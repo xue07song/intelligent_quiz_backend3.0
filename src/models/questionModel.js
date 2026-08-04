@@ -87,6 +87,49 @@ const remove = async (id) => {
     return result;
 };
 
+// 批量新增（事务）—— 已存在 id 跳过，不抛错
+const batchCreate = async (items) => {
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+
+        const placeholder = '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+        const placeholders = items.map(() => placeholder).join(', ');
+        const values = [];
+        for (const data of items) {
+            values.push(
+                data.id, data.章节, data.题型, data.序号, data.题目, data.选项,
+                data.答案, data.解析, data.难度, data.知识点, data.使用频率, data.出题人
+            );
+        }
+
+        // INSERT IGNORE：遇到重复 id 自动跳过而非报错
+        const [result] = await conn.query(
+            `INSERT IGNORE INTO ${TABLE} (id, 章节, 题型, 序号, 题目, 选项, 答案, 解析, 难度, 知识点, 使用频度, 出题人) VALUES ${placeholders}`,
+            values
+        );
+
+        await conn.commit();
+        return result;
+    } catch (err) {
+        await conn.rollback();
+        throw err;
+    } finally {
+        conn.release();
+    }
+};
+
+// 批量删除（按 id 数组）
+const batchRemove = async (ids) => {
+    if (!ids || ids.length === 0) return { affectedRows: 0 };
+    const placeholders = ids.map(() => '?').join(', ');
+    const [result] = await pool.query(
+        `DELETE FROM ${TABLE} WHERE id IN (${placeholders})`,
+        ids
+    );
+    return result;
+};
+
 const statistics = async () => {
     const [chapterStats] = await pool.query(
         `SELECT 章节, COUNT(*) AS count FROM ${TABLE} GROUP BY 章节 ORDER BY 章节`
@@ -126,6 +169,8 @@ module.exports = {
     findById,
     update,
     remove,
+    batchCreate,
+    batchRemove,
     statistics,
     searchByKeyword,
 };
