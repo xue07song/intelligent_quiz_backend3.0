@@ -220,6 +220,89 @@ const getStats = async (userId) => {
     return practiceModel.getStatistics(userId);
 };
 
+// ==================== 管理端 ====================
+
+// 权限规则：
+// - teacher：只能看学生（role=student）数据
+// - admin：可看所有人，可通过 role 参数筛选 student/teacher
+const resolveRoleFilter = (callerRole, queryRole) => {
+    if (callerRole === 'teacher') {
+        return 'student'; // 教师强制只看学生
+    }
+    if (callerRole === 'admin') {
+        return queryRole || null; // 管理员可选筛选，不传则查全部
+    }
+    return null;
+};
+
+// 管理端：查询所有用户的答题记录列表（含用户信息）
+const adminListRecords = async (callerRole, { role, page, pageSize } = {}) => {
+    const finalRole = resolveRoleFilter(callerRole, role);
+    return practiceModel.findRecordsByRole({ role: finalRole, page, pageSize });
+};
+
+// 管理端：查询有做题记录的用户列表（含统计汇总，按角色区分）
+const adminListUsers = async (callerRole, { role } = {}) => {
+    const finalRole = resolveRoleFilter(callerRole, role);
+    const users = await practiceModel.findUsersWithRecords({ role: finalRole });
+    // 按 role 分组返回，方便前端展示
+    const grouped = { student: [], teacher: [], admin: [] };
+    users.forEach((u) => {
+        if (grouped[u.role]) grouped[u.role].push(u);
+    });
+    return { total: users.length, grouped, list: users };
+};
+
+// 管理端：查询指定用户的答题记录列表
+const adminListUserRecords = async (callerRole, targetUserId, { page, pageSize } = {}) => {
+    // 教师只能查看学生记录，需校验目标用户角色
+    if (callerRole === 'teacher') {
+        const targetUser = await practiceModel.findUserById(targetUserId);
+        if (!targetUser || targetUser.role !== 'student') {
+            const error = new Error('教师只能查看学生的做题记录');
+            error.statusCode = 403;
+            error.errorCode = 40301;
+            throw error;
+        }
+    }
+    return practiceModel.findRecordsByUserId(targetUserId, { page, pageSize });
+};
+
+// 管理端：查询指定用户的统计分析
+const adminGetUserStats = async (callerRole, targetUserId) => {
+    if (callerRole === 'teacher') {
+        const targetUser = await practiceModel.findUserById(targetUserId);
+        if (!targetUser || targetUser.role !== 'student') {
+            const error = new Error('教师只能查看学生的统计数据');
+            error.statusCode = 403;
+            error.errorCode = 40301;
+            throw error;
+        }
+    }
+    return practiceModel.getUserStatistics(targetUserId);
+};
+
+// 管理端：查看任意答题记录详情（教师需校验记录所属用户为学生）
+const adminGetRecord = async (callerRole, recordId) => {
+    const record = await practiceModel.findRecordById(recordId);
+    if (!record) {
+        const error = new Error('答题记录不存在');
+        error.statusCode = 404;
+        error.errorCode = 40401;
+        throw error;
+    }
+    if (callerRole === 'teacher') {
+        const targetUser = await practiceModel.findUserById(record.user_id);
+        if (!targetUser || targetUser.role !== 'student') {
+            const error = new Error('教师只能查看学生的答题记录');
+            error.statusCode = 403;
+            error.errorCode = 40301;
+            throw error;
+        }
+    }
+    return record;
+};
+
 module.exports = {
     generateExam,
     getExams,
@@ -228,4 +311,9 @@ module.exports = {
     getRecords,
     getRecord,
     getStats,
+    adminListRecords,
+    adminListUsers,
+    adminListUserRecords,
+    adminGetUserStats,
+    adminGetRecord,
 };

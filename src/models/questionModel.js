@@ -10,10 +10,14 @@ const create = async (data) => {
     return result;
 };
 
-const findAll = async ({ page = 1, pageSize = 20, 章节, 题型, 难度, 关键词, 出题人 } = {}) => {
+const findAll = async ({ page = 1, pageSize = 20, id, 章节, 题型, 难度, 关键词, 出题人 } = {}) => {
     const conditions = [];
     const params = [];
 
+    if (id !== undefined && id !== '' && id !== null) {
+        conditions.push('id LIKE ?');
+        params.push(`%${id}%`);
+    }
     if (章节 !== undefined && 章节 !== '' && 章节 !== null) {
         conditions.push('章节 = ?');
         params.push(章节);

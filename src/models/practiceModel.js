@@ -228,6 +228,92 @@ const getStatistics = async (userId) => {
     };
 };
 
+// ==================== 管理端查询 ====================
+
+// 查询所有用户的答题记录（可按角色过滤：student/teacher）
+const findRecordsByRole = async ({ role, userId, page = 1, pageSize = 20 } = {}) => {
+    const offset = (page - 1) * pageSize;
+    const conditions = [];
+    const params = [];
+    if (role) {
+        conditions.push('u.role = ?');
+        params.push(role);
+    }
+    if (userId) {
+        conditions.push('r.user_id = ?');
+        params.push(userId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const [countRows] = await pool.query(
+        `SELECT COUNT(*) AS total FROM \`exam_records\` r
+         INNER JOIN \`users\` u ON r.user_id = u.id ${where}`,
+        params
+    );
+    const total = countRows[0].total;
+
+    const [rows] = await pool.query(
+        `SELECT r.id, r.exam_id, r.user_id, u.username, u.nickname, u.role,
+                r.total_count, r.answered_count, r.correct_count, r.wrong_count, r.skipped_count,
+                r.objective_total, r.objective_correct, r.accuracy, r.score,
+                r.duration_seconds, r.submitted_at, e.title AS exam_title
+         FROM \`exam_records\` r
+         INNER JOIN \`users\` u ON r.user_id = u.id
+         LEFT JOIN \`exams\` e ON r.exam_id = e.id
+         ${where} ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset]
+    );
+    return { rows, total };
+};
+
+// 查询有答题记录的用户列表（含统计汇总，按角色分组）
+const findUsersWithRecords = async ({ role } = {}) => {
+    const conditions = [];
+    const params = [];
+    if (role) {
+        conditions.push('u.role = ?');
+        params.push(role);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const [rows] = await pool.query(
+        `SELECT u.id, u.username, u.nickname, u.role, u.status,
+                COUNT(r.id) AS attempt_count,
+                COALESCE(ROUND(AVG(r.accuracy), 2), 0) AS avg_accuracy,
+                COALESCE(MAX(r.accuracy), 0) AS max_accuracy,
+                COALESCE(MIN(r.accuracy), 0) AS min_accuracy,
+                COALESCE(SUM(r.total_count), 0) AS total_questions,
+                COALESCE(SUM(r.correct_count), 0) AS total_correct,
+                MAX(r.submitted_at) AS last_attempt_at
+         FROM \`users\` u
+         INNER JOIN \`exam_records\` r ON u.id = r.user_id
+         ${where}
+         GROUP BY u.id, u.username, u.nickname, u.role, u.status
+         ORDER BY u.role ASC, attempt_count DESC`,
+        params
+    );
+    return rows;
+};
+
+// 管理端：查询某用户的答题记录列表
+const findRecordsByUserId = async (targetUserId, { page = 1, pageSize = 20 } = {}) => {
+    return findRecordsByRole({ userId: targetUserId, page, pageSize });
+};
+
+// 管理端：查询某用户的统计信息（复用 getStatistics）
+const getUserStatistics = async (userId) => {
+    return getStatistics(userId);
+};
+
+// 管理端：根据 id 查用户（用于权限校验）
+const findUserById = async (userId) => {
+    const [rows] = await pool.query(
+        'SELECT id, username, nickname, role, status FROM `users` WHERE id = ?',
+        [userId]
+    );
+    return rows[0] || null;
+};
+
 module.exports = {
     randomPick,
     createExam,
@@ -238,5 +324,10 @@ module.exports = {
     findRecordsByUser,
     findRecordById,
     getStatistics,
+    findRecordsByRole,
+    findUsersWithRecords,
+    findRecordsByUserId,
+    getUserStatistics,
+    findUserById,
     OBJECTIVE_TYPES,
 };

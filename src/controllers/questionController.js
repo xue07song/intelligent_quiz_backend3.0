@@ -17,6 +17,7 @@ const findAll = async (req, res, next) => {
         const result = await questionService.getQuestions({
             page,
             pageSize,
+            id: req.query.id,
             章节: req.query.章节,
             题型: req.query.题型,
             难度: req.query.难度,
