@@ -26,7 +26,7 @@ const listExams = async (req, res, next) => {
 // 试卷详情
 const getExam = async (req, res, next) => {
     try {
-        const exam = await practiceService.getExam(req.params.id);
+        const exam = await practiceService.getExam(req.params.id, req.user.id);
         res.json(success(exam));
     } catch (err) {
         next(err);
@@ -43,12 +43,12 @@ const submit = async (req, res, next) => {
     }
 };
 
-// 答题记录列表
+// 答题记录列表（按角色权限范围：学生仅本人，教师看师生，管理员看全部）
 const listRecords = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const pageSize = parseInt(req.query.pageSize) || 20;
-        const result = await practiceService.getRecords(req.user.id, { page, pageSize });
+        const result = await practiceService.getRecords(req.user.id, req.user.role, { page, pageSize });
         res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) {
         next(err);
@@ -58,7 +58,7 @@ const listRecords = async (req, res, next) => {
 // 答题记录详情
 const getRecord = async (req, res, next) => {
     try {
-        const record = await practiceService.getRecord(req.params.id);
+        const record = await practiceService.getRecord(req.params.id, req.user.id);
         res.json(success(record));
     } catch (err) {
         next(err);
@@ -133,7 +133,18 @@ const adminGetRecord = async (req, res, next) => {
     }
 };
 
+// 管理端：以人为界的全局统计总览（每人含汇总 + 最近 N 次答题明细）
+const adminGetAllStats = async (req, res, next) => {
+    try {
+        const role = req.query.role;
+        const result = await practiceService.adminGetAllStatsByUser(req.user.role, { role });
+        res.json(success(result));
+    } catch (err) {
+        next(err);
+    }
+};
+
 module.exports = {
     generate, listExams, getExam, submit, listRecords, getRecord, statistics,
-    adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord,
+    adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
 };

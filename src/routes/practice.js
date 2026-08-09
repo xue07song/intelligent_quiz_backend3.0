@@ -47,4 +47,7 @@ router.get('/admin/users/:userId/records', requireRoles('admin', 'teacher'), pra
 // 查看指定用户的统计分析
 router.get('/admin/users/:userId/statistics', requireRoles('admin', 'teacher'), practiceController.adminGetUserStats);
 
+// 以人为界的全局统计总览（每人含汇总 + 最近 N 次答题明细）
+router.get('/admin/stats/all', requireRoles('admin', 'teacher'), practiceController.adminGetAllStats);
+
 module.exports = router;

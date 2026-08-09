@@ -103,8 +103,10 @@ const statistics = async (req, res, next) => {
 const search = async (req, res, next) => {
     try {
         const keyword = req.query.kw || req.query.keyword || '';
-        const results = await questionService.searchQuestions(keyword);
-        res.json(success(results));
+        const page = parseInt(req.query.page) || 1;
+        const pageSize = parseInt(req.query.pageSize) || 20;
+        const result = await questionService.searchQuestions(keyword, { page, pageSize });
+        res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) {
         next(err);
     }

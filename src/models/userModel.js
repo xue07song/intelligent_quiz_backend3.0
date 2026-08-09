@@ -14,6 +14,12 @@ const findById = async (id) => {
     return rows[0] || null;
 };
 
+// 按 id 查询（含 password 字段，用于改密码校验）
+const findWithPasswordById = async (id) => {
+    const [rows] = await pool.query(`SELECT * FROM ${TABLE} WHERE id = ?`, [id]);
+    return rows[0] || null;
+};
+
 const findAll = async ({ page = 1, pageSize = 20, role, keyword, status } = {}) => {
     const conditions = [];
     const params = [];
@@ -88,6 +94,7 @@ const remove = async (id) => {
 module.exports = {
     findByUsername,
     findById,
+    findWithPasswordById,
     findAll,
     create,
     update,

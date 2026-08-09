@@ -79,7 +79,7 @@ const batchImport = async (items) => {
             解析: item.解析 ? String(item.解析) : '',
             难度: item.难度 != null ? String(item.难度) : '',
             知识点: item.知识点 ? String(item.知识点) : '',
-            使用频率: item.使用频率 != null ? String(item.使用频率) : '0',
+            使用频度: item.使用频率 != null ? String(item.使用频率) : '0',
             出题人: item.出题人 ? String(item.出题人) : '',
         });
     });
@@ -91,12 +91,9 @@ const batchImport = async (items) => {
         throw error;
     }
 
-    // 查询已存在的 id，标记为跳过
-    const existingIds = new Set();
-    for (const v of validItems) {
-        const found = await questionModel.findById(v.id);
-        if (found) existingIds.add(v.id);
-    }
+    // 批量查询已存在的 id（单次查询替代 N+1）
+    const allIds = validItems.map((v) => v.id);
+    const existingIds = new Set(await questionModel.findExistingIds(allIds));
 
     const toInsert = validItems.filter((v) => !existingIds.has(v.id));
     const skipped = validItems.filter((v) => existingIds.has(v.id)).map((v) => ({
@@ -136,14 +133,14 @@ const getStatistics = async () => {
     return questionModel.statistics();
 };
 
-const searchQuestions = async (keyword) => {
+const searchQuestions = async (keyword, { page, pageSize } = {}) => {
     if (!keyword || !keyword.trim()) {
         const error = new Error('搜索关键词不能为空');
         error.statusCode = 400;
         error.errorCode = 40001;
         throw error;
     }
-    return questionModel.searchByKeyword(keyword.trim());
+    return questionModel.searchByKeyword(keyword.trim(), { page, pageSize });
 };
 
 module.exports = {

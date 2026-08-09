@@ -62,6 +62,17 @@ const findById = async (id) => {
     return rows[0] || null;
 };
 
+// 批量查询已存在的 id（用于批量导入去重）
+const findExistingIds = async (ids) => {
+    if (!ids || ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(', ');
+    const [rows] = await pool.query(
+        `SELECT id FROM ${TABLE} WHERE id IN (${placeholders})`,
+        ids
+    );
+    return rows.map((r) => r.id);
+};
+
 const update = async (id, data) => {
     const fields = [];
     const params = [];
@@ -103,7 +114,7 @@ const batchCreate = async (items) => {
         for (const data of items) {
             values.push(
                 data.id, data.章节, data.题型, data.序号, data.题目, data.选项,
-                data.答案, data.解析, data.难度, data.知识点, data.使用频率, data.出题人
+                data.答案, data.解析, data.难度, data.知识点, data.使用频度, data.出题人
             );
         }
 
@@ -159,18 +170,27 @@ const statistics = async () => {
     };
 };
 
-const searchByKeyword = async (keyword) => {
-    const [rows] = await pool.query(
-        `SELECT * FROM ${TABLE} WHERE 题目 LIKE ? OR 选项 LIKE ? OR 知识点 LIKE ? OR 解析 LIKE ? ORDER BY id DESC`,
-        [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`]
+const searchByKeyword = async (keyword, { page = 1, pageSize = 20 } = {}) => {
+    const kw = `%${keyword}%`;
+    const params = [kw, kw, kw, kw];
+    const [countResult] = await pool.query(
+        `SELECT COUNT(*) AS total FROM ${TABLE} WHERE 题目 LIKE ? OR 选项 LIKE ? OR 知识点 LIKE ? OR 解析 LIKE ?`,
+        params
     );
-    return rows;
+    const total = countResult[0].total;
+    const offset = (page - 1) * pageSize;
+    const [rows] = await pool.query(
+        `SELECT * FROM ${TABLE} WHERE 题目 LIKE ? OR 选项 LIKE ? OR 知识点 LIKE ? OR 解析 LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset]
+    );
+    return { rows, total };
 };
 
 module.exports = {
     create,
     findAll,
     findById,
+    findExistingIds,
     update,
     remove,
     batchCreate,

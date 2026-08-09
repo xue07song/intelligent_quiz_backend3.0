@@ -41,13 +41,19 @@ const getExams = async (userId, options) => {
     return practiceModel.findExamsByUser(userId, options);
 };
 
-// 获取试卷详情
-const getExam = async (examId) => {
+// 获取试卷详情（校验所属权）
+const getExam = async (examId, userId) => {
     const exam = await practiceModel.findExamById(examId);
     if (!exam) {
         const error = new Error('试卷不存在');
         error.statusCode = 404;
         error.errorCode = 40401;
+        throw error;
+    }
+    if (exam.user_id !== userId) {
+        const error = new Error('无权查看此试卷');
+        error.statusCode = 403;
+        error.errorCode = 40301;
         throw error;
     }
     return exam;
@@ -60,6 +66,12 @@ const submitExam = async (userId, examId, { answers, startedAt }) => {
         const error = new Error('试卷不存在');
         error.statusCode = 404;
         error.errorCode = 40401;
+        throw error;
+    }
+    if (exam.user_id !== userId) {
+        const error = new Error('无权提交此试卷');
+        error.statusCode = 403;
+        error.errorCode = 40301;
         throw error;
     }
 
@@ -125,9 +137,8 @@ const submitExam = async (userId, examId, { answers, startedAt }) => {
                     wrongCount++;
                 }
             } else {
-                // 非客观题：标记为不判分
+                // 非客观题：标记为不判分，不计入错误数
                 isCorrect = 3;
-                wrongCount++; // 计入已答但非客观题
             }
         } else {
             skippedCount++;
@@ -198,18 +209,24 @@ const checkAnswer = (type, userAnswer, correctAnswer) => {
     }
 };
 
-// 答题记录列表
-const getRecords = async (userId, options) => {
-    return practiceModel.findRecordsByUser(userId, options);
+// 答题记录列表（按角色权限范围查询）
+const getRecords = async (userId, userRole, options) => {
+    return practiceModel.findRecordsByScope({ userId, userRole, ...options });
 };
 
-// 答题记录详情
-const getRecord = async (recordId) => {
+// 答题记录详情（校验所属权）
+const getRecord = async (recordId, userId) => {
     const record = await practiceModel.findRecordById(recordId);
     if (!record) {
         const error = new Error('答题记录不存在');
         error.statusCode = 404;
         error.errorCode = 40401;
+        throw error;
+    }
+    if (record.user_id !== userId) {
+        const error = new Error('无权查看此答题记录');
+        error.statusCode = 403;
+        error.errorCode = 40301;
         throw error;
     }
     return record;
@@ -282,7 +299,7 @@ const adminGetUserStats = async (callerRole, targetUserId) => {
     return practiceModel.getUserStatistics(targetUserId);
 };
 
-// 管理端：查看任意答题记录详情（教师需校验记录所属用户为学生）
+// 管理端：查看任意答题记录详情（教师可查看 teacher+student 的记录，管理员查看所有人）
 const adminGetRecord = async (callerRole, recordId) => {
     const record = await practiceModel.findRecordById(recordId);
     if (!record) {
@@ -293,14 +310,84 @@ const adminGetRecord = async (callerRole, recordId) => {
     }
     if (callerRole === 'teacher') {
         const targetUser = await practiceModel.findUserById(record.user_id);
-        if (!targetUser || targetUser.role !== 'student') {
-            const error = new Error('教师只能查看学生的答题记录');
+        if (!targetUser || (targetUser.role !== 'student' && targetUser.role !== 'teacher')) {
+            const error = new Error('教师只能查看教师和学生的答题记录');
             error.statusCode = 403;
             error.errorCode = 40301;
             throw error;
         }
     }
     return record;
+};
+
+// 管理端：以人为界的全局统计总览
+// 返回所有有答题记录的用户（按角色过滤），每人含：个人汇总（基于全部记录） + 最近 N 次答题明细
+const adminGetAllStatsByUser = async (callerRole, { role } = {}) => {
+    const finalRole = resolveRoleFilter(callerRole, role);
+    const records = await practiceModel.findAllRecordsWithUser({ role: finalRole });
+
+    // 按 user_id 分组，同时累计全量汇总
+    const userMap = new Map();
+    records.forEach((r) => {
+        if (!userMap.has(r.user_id)) {
+            userMap.set(r.user_id, {
+                id: r.user_id,
+                username: r.username,
+                nickname: r.nickname,
+                role: r.role,
+                records: [],
+                attempt_count: 0,
+                acc_sum: 0,
+                max_accuracy: 0,
+                min_accuracy: 100,
+                total_questions: 0,
+                total_correct: 0,
+            });
+        }
+        const u = userMap.get(r.user_id);
+        u.attempt_count++;
+        u.acc_sum += Number(r.accuracy);
+        if (Number(r.accuracy) > u.max_accuracy) u.max_accuracy = Number(r.accuracy);
+        if (Number(r.accuracy) < u.min_accuracy) u.min_accuracy = Number(r.accuracy);
+        u.total_questions += Number(r.total_count);
+        u.total_correct += Number(r.correct_count);
+        u.records.push({
+            id: r.id,
+            exam_id: r.exam_id,
+            exam_title: r.exam_title,
+            total_count: r.total_count,
+            answered_count: r.answered_count,
+            correct_count: r.correct_count,
+            wrong_count: r.wrong_count,
+            skipped_count: r.skipped_count,
+            accuracy: r.accuracy,
+            score: r.score,
+            duration_seconds: r.duration_seconds,
+            submitted_at: r.submitted_at,
+        });
+    });
+
+    const PER_USER_LIMIT = 20; // 每人最多展示最近 20 次明细
+    const users = Array.from(userMap.values()).map((u) => {
+        const overview = {
+            attempt_count: u.attempt_count,
+            avg_accuracy: u.attempt_count > 0 ? Math.round((u.acc_sum / u.attempt_count) * 100) / 100 : 0,
+            max_accuracy: u.attempt_count > 0 ? u.max_accuracy : 0,
+            min_accuracy: u.attempt_count > 0 ? u.min_accuracy : 0,
+            total_questions: u.total_questions,
+            total_correct: u.total_correct,
+        };
+        return {
+            id: u.id,
+            username: u.username,
+            nickname: u.nickname,
+            role: u.role,
+            overview,
+            records: u.records.slice(0, PER_USER_LIMIT),
+        };
+    });
+
+    return { total: users.length, users };
 };
 
 module.exports = {
@@ -316,4 +403,5 @@ module.exports = {
     adminListUserRecords,
     adminGetUserStats,
     adminGetRecord,
+    adminGetAllStatsByUser,
 };

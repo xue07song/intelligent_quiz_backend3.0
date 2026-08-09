@@ -146,7 +146,7 @@ const createRecord = async (data) => {
     }
 };
 
-// 查询用户答题记录列表
+// 查询用户答题记录列表（含提交人信息）
 const findRecordsByUser = async (userId, { page = 1, pageSize = 20 } = {}) => {
     const offset = (page - 1) * pageSize;
     const [countRows] = await pool.query(
@@ -154,20 +154,62 @@ const findRecordsByUser = async (userId, { page = 1, pageSize = 20 } = {}) => {
     );
     const total = countRows[0].total;
     const [rows] = await pool.query(
-        `SELECT r.*, e.title AS exam_title
+        `SELECT r.*, e.title AS exam_title, u.username, u.nickname, u.role
          FROM \`exam_records\` r
          LEFT JOIN \`exams\` e ON r.exam_id = e.id
+         LEFT JOIN \`users\` u ON r.user_id = u.id
          WHERE r.user_id = ? ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?`,
         [userId, pageSize, offset]
     );
     return { rows, total };
 };
 
-// 查询答题记录详情（含每题对错）
+// 按角色权限范围查询答题记录（含提交人信息）
+// 权限规则：
+//   student  → 仅本人记录
+//   teacher  → 所有 teacher + student 的记录
+//   admin    → 所有人的记录
+const findRecordsByScope = async ({ userId, userRole, page = 1, pageSize = 20 } = {}) => {
+    const offset = (page - 1) * pageSize;
+    const conditions = [];
+    const params = [];
+
+    if (userRole === 'student') {
+        conditions.push('r.user_id = ?');
+        params.push(userId);
+    } else if (userRole === 'teacher') {
+        conditions.push("u.role IN ('teacher', 'student')");
+    }
+    // admin 不加条件，看所有人
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const [countRows] = await pool.query(
+        `SELECT COUNT(*) AS total FROM \`exam_records\` r
+         INNER JOIN \`users\` u ON r.user_id = u.id ${where}`,
+        params
+    );
+    const total = countRows[0].total;
+
+    const [rows] = await pool.query(
+        `SELECT r.*, e.title AS exam_title, u.username, u.nickname, u.role
+         FROM \`exam_records\` r
+         LEFT JOIN \`exams\` e ON r.exam_id = e.id
+         LEFT JOIN \`users\` u ON r.user_id = u.id
+         ${where} ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset]
+    );
+    return { rows, total };
+};
+
+// 查询答题记录详情（含每题对错，含提交人 username/nickname）
 const findRecordById = async (recordId) => {
     const [recordRows] = await pool.query(
-        `SELECT r.*, e.title AS exam_title FROM \`exam_records\` r
-         LEFT JOIN \`exams\` e ON r.exam_id = e.id WHERE r.id = ?`,
+        `SELECT r.*, e.title AS exam_title, u.username, u.nickname, u.role AS user_role
+         FROM \`exam_records\` r
+         LEFT JOIN \`exams\` e ON r.exam_id = e.id
+         LEFT JOIN \`users\` u ON r.user_id = u.id
+         WHERE r.id = ?`,
         [recordId]
     );
     if (recordRows.length === 0) return null;
@@ -198,11 +240,15 @@ const getStatistics = async (userId) => {
         [userId]
     );
 
-    // 近 20 次趋势
+    // 近 20 次趋势（含提交人信息、试卷标题）
     const [trend] = await pool.query(
-        `SELECT id, exam_id, accuracy, score, total_count, answered_count, correct_count, wrong_count, skipped_count, duration_seconds, submitted_at, started_at
-         FROM \`exam_records\` WHERE user_id = ?
-         ORDER BY submitted_at DESC LIMIT 20`,
+        `SELECT r.id, r.exam_id, r.accuracy, r.score, r.total_count, r.answered_count, r.correct_count, r.wrong_count, r.skipped_count, r.duration_seconds, r.submitted_at, r.started_at,
+                e.title AS exam_title, u.username, u.nickname, u.role
+         FROM \`exam_records\` r
+         LEFT JOIN \`exams\` e ON r.exam_id = e.id
+         LEFT JOIN \`users\` u ON r.user_id = u.id
+         WHERE r.user_id = ?
+         ORDER BY r.submitted_at DESC LIMIT 20`,
         [userId]
     );
     trend.reverse(); // 时间正序展示趋势
@@ -266,6 +312,31 @@ const findRecordsByRole = async ({ role, userId, page = 1, pageSize = 20 } = {})
     return { rows, total };
 };
 
+// 管理端：查询所有用户的答题记录（不分页，按用户+提交时间排序，含用户信息）
+// 用于"以人为界"分组统计：service 层按 user_id 分组，每人保留最近 N 次
+const findAllRecordsWithUser = async ({ role } = {}) => {
+    const conditions = [];
+    const params = [];
+    if (role) {
+        conditions.push('u.role = ?');
+        params.push(role);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const [rows] = await pool.query(
+        `SELECT r.id, r.exam_id, r.user_id, u.username, u.nickname, u.role,
+                r.total_count, r.answered_count, r.correct_count, r.wrong_count, r.skipped_count,
+                r.objective_total, r.objective_correct, r.accuracy, r.score,
+                r.duration_seconds, r.submitted_at, e.title AS exam_title
+         FROM \`exam_records\` r
+         INNER JOIN \`users\` u ON r.user_id = u.id
+         LEFT JOIN \`exams\` e ON r.exam_id = e.id
+         ${where} ORDER BY u.id ASC, r.submitted_at DESC`,
+        params
+    );
+    return rows;
+};
+
 // 查询有答题记录的用户列表（含统计汇总，按角色分组）
 const findUsersWithRecords = async ({ role } = {}) => {
     const conditions = [];
@@ -325,6 +396,8 @@ module.exports = {
     findRecordById,
     getStatistics,
     findRecordsByRole,
+    findRecordsByScope,
+    findAllRecordsWithUser,
     findUsersWithRecords,
     findRecordsByUserId,
     getUserStatistics,

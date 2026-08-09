@@ -72,10 +72,8 @@ const changePassword = async (userId, { oldPassword, newPassword }) => {
         throw error;
     }
 
-    // findById 默认不返回 password，这里需要完整记录用于校验原密码
-    const user = await userModel.findByUsername(
-        (await userModel.findById(userId)).username
-    );
+    // 单次查询获取含 password 的完整记录
+    const user = await userModel.findWithPasswordById(userId);
     if (!user) {
         const error = new Error('用户不存在');
         error.statusCode = 404;
