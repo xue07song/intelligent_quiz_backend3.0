@@ -84,8 +84,8 @@ const submitExam = async (userId, examId, { answers, startedAt }) => {
         const start = new Date(startedAt);
         durationSeconds = Math.floor((Date.now() - start.getTime()) / 1000);
         if (durationSeconds < 0) durationSeconds = 0;
-        // 转为 MySQL datetime 格式
-        startedAtValue = start.toISOString().slice(0, 19).replace('T', ' ');
+        // 转为 MySQL datetime 格式（本地时间，避免 toISOString 的 UTC 时区偏差）
+        startedAtValue = new Date(start.getTime() - start.getTimezoneOffset() * 60000).toISOString().slice(0, 19).replace('T', ' ');
     }
 
     // 逐题判分

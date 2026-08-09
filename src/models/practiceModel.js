@@ -200,7 +200,7 @@ const getStatistics = async (userId) => {
 
     // 近 20 次趋势
     const [trend] = await pool.query(
-        `SELECT id, exam_id, accuracy, score, total_count, correct_count, submitted_at
+        `SELECT id, exam_id, accuracy, score, total_count, answered_count, correct_count, wrong_count, skipped_count, duration_seconds, submitted_at, started_at
          FROM \`exam_records\` WHERE user_id = ?
          ORDER BY submitted_at DESC LIMIT 20`,
         [userId]
