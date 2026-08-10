@@ -100,3 +100,25 @@ CREATE TABLE IF NOT EXISTS `exam_answers` (
   INDEX idx_record (record_id),
   INDEX idx_question (question_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题明细表';
+
+-- ==================== 反馈模块表 ====================
+
+-- 用户反馈表
+CREATE TABLE IF NOT EXISTS `feedbacks` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '反馈ID',
+  user_id INT NOT NULL COMMENT '提交用户ID',
+  category VARCHAR(20) NOT NULL DEFAULT 'other' COMMENT '分类：bug故障 suggestion建议 other其他',
+  title VARCHAR(100) NOT NULL COMMENT '反馈标题',
+  content TEXT NOT NULL COMMENT '反馈内容',
+  contact VARCHAR(100) COMMENT '联系方式（可选）',
+  status VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT '处理状态：pending待处理 processing处理中 resolved已处理 closed已关闭',
+  reply TEXT COMMENT '管理员回复',
+  replied_by INT COMMENT '回复人用户ID',
+  replied_at TIMESTAMP NULL COMMENT '回复时间',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  INDEX idx_user (user_id),
+  INDEX idx_status (status),
+  INDEX idx_category (category),
+  INDEX idx_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户反馈表';
