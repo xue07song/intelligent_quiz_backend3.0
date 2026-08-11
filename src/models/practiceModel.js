@@ -29,6 +29,31 @@ const randomPick = async ({ 章节, 题型, 难度, count }) => {
     return rows;
 };
 
+// 规则组卷候选题，使用 exam_questions 实时计算题目历史使用次数
+const findRuleExamCandidates = async ({ chapters = [] } = {}) => {
+    const normalizedChapters = Array.isArray(chapters)
+        ? [...new Set(chapters.map(Number).filter((chapter) => Number.isInteger(chapter) && chapter >= 1 && chapter <= 10))]
+        : [];
+    const conditions = [];
+    const params = [];
+    if (normalizedChapters.length) {
+        conditions.push(`q.章节 IN (${normalizedChapters.map(() => '?').join(', ')})`);
+        params.push(...normalizedChapters);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const [rows] = await pool.query(
+        `SELECT q.*, COUNT(eq.id) AS used_count
+         FROM ${QT_TABLE} q
+         LEFT JOIN \`exam_questions\` eq
+           ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         ${where}
+         GROUP BY q.id
+         ORDER BY q.章节, q.题型, q.序号`,
+        params
+    );
+    return rows;
+};
+
 // 统计客观题数量
 const countObjective = (questions) => {
     return questions.filter((q) => OBJECTIVE_TYPES.includes(Number(q.题型))).length;
@@ -387,6 +412,7 @@ const findUserById = async (userId) => {
 
 module.exports = {
     randomPick,
+    findRuleExamCandidates,
     createExam,
     findExamsByUser,
     findExamById,

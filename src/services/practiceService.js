@@ -1,5 +1,6 @@
 const practiceModel = require('../models/practiceModel');
 const { OBJECTIVE_TYPES } = practiceModel;
+const { buildInventory, analyzeRuleExamConfiguration, assembleRuleExam } = require('../algorithms/examRuleEngine');
 
 // 随机组卷
 const generateExam = async (userId, options) => {
@@ -34,6 +35,65 @@ const generateExam = async (userId, options) => {
     });
 
     return { examId, title: examTitle, total: questions.length, objectiveCount, questions };
+};
+
+const getExamInventory = async ({ chapters = [] } = {}) => {
+    const candidates = await practiceModel.findRuleExamCandidates({ chapters });
+    return buildInventory(candidates).report;
+};
+
+const previewRuleExam = async (options = {}) => {
+    const {
+        chapters = [], count = 20, typeDistribution,
+        difficultyDistribution, minKnowledgePoints = 1,
+    } = options;
+    const candidates = await practiceModel.findRuleExamCandidates({ chapters });
+    return analyzeRuleExamConfiguration({
+        rawQuestions: candidates,
+        count: Number(count),
+        typeDistribution,
+        difficultyDistribution,
+        minKnowledgePoints: Number(minKnowledgePoints),
+    });
+};
+
+const generateRuleExam = async (userId, options = {}) => {
+    const {
+        title, chapters = [], count = 20,
+        typeDistribution, difficultyDistribution, minKnowledgePoints = 1,
+    } = options;
+    const numCount = Number(count);
+    if (!Number.isInteger(numCount) || numCount < 1 || numCount > 100) {
+        const error = new Error('题目数量需为 1-100 之间的整数');
+        error.statusCode = 400;
+        error.errorCode = 40001;
+        throw error;
+    }
+    const pointCount = Number(minKnowledgePoints);
+    if (!Number.isInteger(pointCount) || pointCount < 1 || pointCount > 111) {
+        const error = new Error('知识点覆盖数量必须为正整数');
+        error.statusCode = 400;
+        error.errorCode = 40001;
+        throw error;
+    }
+    const candidates = await practiceModel.findRuleExamCandidates({ chapters });
+    const { questions, report } = assembleRuleExam({
+        rawQuestions: candidates,
+        count: numCount,
+        typeDistribution,
+        difficultyDistribution,
+        minKnowledgePoints: pointCount,
+    });
+    const examTitle = String(title || '').trim() || `智能组卷-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
+    const { examId, objectiveCount } = await practiceModel.createExam({
+        userId,
+        title: examTitle,
+        chapter: Array.isArray(chapters) && chapters.length ? chapters.join(',') : null,
+        questionType: '规则分布',
+        difficulty: '五级分布',
+        questions,
+    });
+    return { examId, title: examTitle, total: questions.length, objectiveCount, report, questions };
 };
 
 // 获取试卷列表
@@ -392,6 +452,9 @@ const adminGetAllStatsByUser = async (callerRole, { role } = {}) => {
 
 module.exports = {
     generateExam,
+    getExamInventory,
+    previewRuleExam,
+    generateRuleExam,
     getExams,
     getExam,
     submitExam,

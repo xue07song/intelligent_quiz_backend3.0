@@ -11,6 +11,34 @@ const generate = async (req, res, next) => {
     }
 };
 
+const inventory = async (req, res, next) => {
+    try {
+        const chapters = String(req.query.chapters || '').split(',').filter(Boolean).map(Number);
+        const result = await practiceService.getExamInventory({ chapters });
+        res.json(success(result));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const previewRule = async (req, res, next) => {
+    try {
+        const result = await practiceService.previewRuleExam(req.body);
+        res.json(success(result));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const generateRule = async (req, res, next) => {
+    try {
+        const result = await practiceService.generateRuleExam(req.user.id, req.body);
+        res.status(201).json(success(result, '✅ 智能组卷成功'));
+    } catch (err) {
+        next(err);
+    }
+};
+
 // 试卷列表
 const listExams = async (req, res, next) => {
     try {
@@ -145,6 +173,6 @@ const adminGetAllStats = async (req, res, next) => {
 };
 
 module.exports = {
-    generate, listExams, getExam, submit, listRecords, getRecord, statistics,
+    generate, inventory, previewRule, generateRule, listExams, getExam, submit, listRecords, getRecord, statistics,
     adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
 };
