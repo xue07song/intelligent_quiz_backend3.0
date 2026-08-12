@@ -23,7 +23,7 @@ const errorHandler = (err, req, res, next) => {
     const errorCode = err.errorCode || 50000;
     const message = err.message || '服务器内部错误';
 
-    res.status(statusCode).json(error(errorCode, message));
+    res.status(statusCode).json(error(errorCode, message, err.details || null));
 };
 
 module.exports = errorHandler;

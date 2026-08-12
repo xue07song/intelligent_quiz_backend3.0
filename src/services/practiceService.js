@@ -97,12 +97,12 @@ const generateRuleExam = async (userId, options = {}) => {
 };
 
 // 获取试卷列表
-const getExams = async (userId, options) => {
-    return practiceModel.findExamsByUser(userId, options);
+const getExams = async (userId, userRole, options) => {
+    return practiceModel.findExamsByScope(userId, userRole, options);
 };
 
 // 获取试卷详情（校验所属权）
-const getExam = async (examId, userId) => {
+const getExam = async (examId, userId, userRole = 'student') => {
     const exam = await practiceModel.findExamById(examId);
     if (!exam) {
         const error = new Error('试卷不存在');
@@ -110,7 +110,8 @@ const getExam = async (examId, userId) => {
         error.errorCode = 40401;
         throw error;
     }
-    if (exam.user_id !== userId) {
+    const canView = exam.user_id === userId || ((userRole === 'student' || userRole === 'admin') && exam.creator_role === 'teacher');
+    if (!canView) {
         const error = new Error('无权查看此试卷');
         error.statusCode = 403;
         error.errorCode = 40301;
@@ -120,7 +121,7 @@ const getExam = async (examId, userId) => {
 };
 
 // 提交答卷并自动评分
-const submitExam = async (userId, examId, { answers, startedAt }) => {
+const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
     const exam = await practiceModel.findExamById(examId);
     if (!exam) {
         const error = new Error('试卷不存在');
@@ -128,7 +129,8 @@ const submitExam = async (userId, examId, { answers, startedAt }) => {
         error.errorCode = 40401;
         throw error;
     }
-    if (exam.user_id !== userId) {
+    const canSubmit = userRole === 'student' && exam.creator_role === 'teacher';
+    if (!canSubmit) {
         const error = new Error('无权提交此试卷');
         error.statusCode = 403;
         error.errorCode = 40301;

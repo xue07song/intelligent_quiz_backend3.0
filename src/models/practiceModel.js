@@ -103,9 +103,26 @@ const findExamsByUser = async (userId, { page = 1, pageSize = 20 } = {}) => {
     return { rows, total };
 };
 
+const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20 } = {}) => {
+    if (userRole === 'teacher') return findExamsByUser(userId, { page, pageSize });
+    const offset = (page - 1) * pageSize;
+    const [countRows] = await pool.query(
+        `SELECT COUNT(*) total FROM exams e INNER JOIN users u ON u.id=e.user_id WHERE u.role='teacher'`
+    );
+    const [rows] = await pool.query(
+        `SELECT e.*, u.nickname creator_name, u.username creator_username, u.role creator_role,
+         (SELECT COUNT(*) FROM exam_records r WHERE r.exam_id=e.id) attempt_count
+         FROM exams e INNER JOIN users u ON u.id=e.user_id WHERE u.role='teacher'
+         ORDER BY e.id DESC LIMIT ? OFFSET ?`, [pageSize, offset]
+    );
+    return { rows, total: countRows[0].total };
+};
+
 // 查询试卷详情（含题目列表，带题库原题信息）
 const findExamById = async (examId) => {
-    const [examRows] = await pool.query('SELECT * FROM `exams` WHERE id = ?', [examId]);
+    const [examRows] = await pool.query(
+        'SELECT e.*, u.role creator_role, u.nickname creator_name FROM `exams` e LEFT JOIN users u ON u.id=e.user_id WHERE e.id = ?', [examId]
+    );
     if (examRows.length === 0) return null;
     const exam = examRows[0];
 
@@ -415,6 +432,7 @@ module.exports = {
     findRuleExamCandidates,
     createExam,
     findExamsByUser,
+    findExamsByScope,
     findExamById,
     findQuestionsByIds,
     createRecord,
