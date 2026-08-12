@@ -11,6 +11,11 @@ router.use(auth);
 // 组卷
 router.post('/exams', practiceController.generate);
 
+// 题库库存与多约束智能组卷（旧组卷接口继续保留）
+router.get('/exam-inventory', practiceController.inventory);
+router.post('/rule-exams/preview', practiceController.previewRule);
+router.post('/rule-exams', practiceController.generateRule);
+
 // 试卷列表
 router.get('/exams', practiceController.listExams);
 
