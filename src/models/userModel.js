@@ -1,16 +1,17 @@
 const pool = require('../config/db');
 
 const TABLE = '`users`';
-// 默认不返回密码字段
-const COLUMNS = 'id, username, role, nickname, status, created_at, updated_at';
+const PROFILE_COLUMNS = 'id, username, role, nickname, status, created_at, updated_at, phone, email, school, avatar, bio';
+const ADMIN_COLUMNS = PROFILE_COLUMNS;
 
 const findByUsername = async (username) => {
     const [rows] = await pool.query(`SELECT * FROM ${TABLE} WHERE username = ?`, [username]);
     return rows[0] || null;
 };
 
-const findById = async (id) => {
-    const [rows] = await pool.query(`SELECT ${COLUMNS} FROM ${TABLE} WHERE id = ?`, [id]);
+const findById = async (id, { withProfile = true } = {}) => {
+    const cols = withProfile ? PROFILE_COLUMNS : ADMIN_COLUMNS;
+    const [rows] = await pool.query(`SELECT ${cols} FROM ${TABLE} WHERE id = ?`, [id]);
     return rows[0] || null;
 };
 
@@ -63,7 +64,7 @@ const create = async (data) => {
 const update = async (id, data) => {
     const fields = [];
     const params = [];
-    const allowedFields = ['role', 'nickname', 'status'];
+    const allowedFields = ['role', 'nickname', 'status', 'phone', 'email', 'school', 'avatar', 'bio'];
 
     for (const field of allowedFields) {
         if (data[field] !== undefined) {

@@ -17,7 +17,7 @@ app.get('/health', (req, res) => {
 app.use('/api/v1', routes);
 
 // 托管前端静态文件
-const frontendDist = path.join(__dirname, '../../intelligent_quiz_fronted3.0/dist');
+const frontendDist = path.join(__dirname, '../../../my-vue-app/intelligent_quiz_fronted3.0/dist');
 app.use(express.static(frontendDist));
 // 前端路由 fallback：所有非 API 请求返回 index.html
 app.use((req, res, next) => {

@@ -23,4 +23,7 @@ router.get('/weakness', aiController.weakness);
 router.post('/generate', requireRoles('admin', 'teacher'), aiController.generate);
 router.post('/generate/save', requireRoles('admin', 'teacher'), aiController.save);
 
+// AI 小助手（所有登录用户，通用对话）
+router.post('/chat', aiController.chat);
+
 module.exports = router;

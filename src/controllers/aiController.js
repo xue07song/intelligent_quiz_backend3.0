@@ -64,4 +64,21 @@ const status = (req, res) => {
     res.json(success({ configured: isConfigured() }));
 };
 
-module.exports = { generate, save, tutor, smartExam, weakness, status };
+// 6. AI 小助手（通用对话）
+const chat = async (req, res, next) => {
+    try {
+        const { messages, context } = req.body;
+        if (!Array.isArray(messages) || messages.length === 0) {
+            const err = new Error('消息列表不能为空');
+            err.statusCode = 400;
+            err.errorCode = 40001;
+            throw err;
+        }
+        const result = await aiService.chat({ messages, context });
+        res.json(success(result));
+    } catch (err) {
+        next(err);
+    }
+};
+
+module.exports = { generate, save, tutor, smartExam, weakness, status, chat };

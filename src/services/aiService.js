@@ -1,4 +1,4 @@
-const { chat, chatJSON, isConfigured } = require('../utils/aiClient');
+const { chat: aiChat, chatJSON, isConfigured } = require('../utils/aiClient');
 const practiceModel = require('../models/practiceModel');
 const questionModel = require('../models/questionModel');
 
@@ -100,7 +100,7 @@ const askTutor = async ({ question, options, questionType, userQuestion, userAns
     if (userAnswer) context.push(`【学生作答】${userAnswer}`);
     context.push(`【学生提问】${userQuestion || '请给我一些解题思路。'}`);
 
-    const content = await chat([
+    const content = await aiChat([
         { role: 'system', content: systemPrompt },
         { role: 'user', content: context.join('\n') },
     ], { temperature: 0.5, max_tokens: 1024 });
@@ -277,10 +277,57 @@ const analyzeWeakness = async (userId) => {
     };
 };
 
+// ==================== 5. AI 小助手（通用对话） ====================
+// 支持多轮对话，带系统角色设定
+const chat = async ({ messages, context }) => {
+    if (!isConfigured()) {
+        const err = new Error('AI 服务未配置：请在 .env 中设置 GLM_API_KEY');
+        err.statusCode = 500;
+        err.errorCode = 50001;
+        throw err;
+    }
+
+    const systemPrompt = `你是「智学助手」，一个集成在智能题库系统中的 AI 小助手。
+
+你的核心能力：
+1. **课程答疑**：解答编程/计算机基础问题（C语言、数据结构、操作系统、计算机网络等）
+2. **学习规划**：根据学生情况制定复习计划和学习建议
+3. **题目解析**：帮助学生理解题目考查的知识点、解题思路
+4. **考试策略**：提供备考技巧、时间分配建议
+5. **系统功能引导**：告诉用户如何使用智能组卷、错题分析等功能
+
+回答要求：
+- 语气亲切、简洁明了，适当使用 emoji 和分点表述
+- 优先给出关键结论，再展开说明
+- 代码示例用 \`\`\` 包裹
+- 如果用户的问题不明确，主动追问
+- 不要编造不确定的信息`;
+
+    // 构建消息列表
+    const fullMessages = [{ role: 'system', content: systemPrompt }];
+
+    // 如果有额外上下文（如当前正在做的题目），注入到系统消息后
+    if (context) {
+        fullMessages.push({ role: 'system', content: `当前上下文：${context}` });
+    }
+
+    // 追加用户的历史对话（最多保留最近 10 轮防止 token 超限）
+    const recentMessages = Array.isArray(messages) ? messages.slice(-20) : [];
+    fullMessages.push(...recentMessages);
+
+    const content = await aiChat(fullMessages, {
+        temperature: 0.7,
+        max_tokens: 2048,
+    });
+
+    return { reply: content };
+};
+
 module.exports = {
     generateQuestions,
     saveGenerated,
     askTutor,
     smartGenerateExam,
     analyzeWeakness,
+    chat,
 };
