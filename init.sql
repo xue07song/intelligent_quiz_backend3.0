@@ -101,6 +101,25 @@ CREATE TABLE IF NOT EXISTS `exam_answers` (
   INDEX idx_question (question_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题明细表';
 
+-- ==================== 注册审核模块表 ====================
+
+-- 注册申请表（用户提交注册申请，管理员/老师审核后创建正式用户）
+CREATE TABLE IF NOT EXISTS `registration_requests` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '申请ID',
+  username VARCHAR(50) NOT NULL UNIQUE COMMENT '申请用户名',
+  password VARCHAR(255) NOT NULL COMMENT 'bcrypt 加密密码',
+  role ENUM('teacher','student') NOT NULL DEFAULT 'student' COMMENT '申请角色：teacher教师 student学生（不允许直接申请 admin）',
+  nickname VARCHAR(50) COMMENT '昵称',
+  status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending' COMMENT '审核状态：pending待审核 approved已通过 rejected已拒绝',
+  reject_reason VARCHAR(255) COMMENT '拒绝原因（status=rejected 时填写）',
+  reviewed_by INT COMMENT '审核人用户ID',
+  reviewed_at TIMESTAMP NULL COMMENT '审核时间',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '申请提交时间',
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  INDEX idx_status (status),
+  INDEX idx_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='注册申请表';
+
 -- ==================== 反馈模块表 ====================
 
 -- 用户反馈表
