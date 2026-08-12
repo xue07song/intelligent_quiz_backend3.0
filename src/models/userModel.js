@@ -81,6 +81,27 @@ const update = async (id, data) => {
     return result;
 };
 
+const updateProfile = async (id, data) => {
+    const fields = [];
+    const params = [];
+    const allowedFields = ['nickname', 'email', 'phone', 'school', 'college'];
+
+    for (const field of allowedFields) {
+        if (data[field] !== undefined && data[field] !== null && String(data[field]).trim() !== '') {
+            fields.push(`${field} = ?`);
+            params.push(String(data[field]).trim());
+        }
+    }
+
+    if (fields.length === 0) {
+        return { affectedRows: 0 };
+    }
+
+    params.push(id);
+    const [result] = await pool.query(`UPDATE ${TABLE} SET ${fields.join(', ')} WHERE id = ?`, params);
+    return result;
+};
+
 const updatePassword = async (id, hashedPassword) => {
     const [result] = await pool.query(`UPDATE ${TABLE} SET password = ? WHERE id = ?`, [hashedPassword, id]);
     return result;
@@ -98,6 +119,7 @@ module.exports = {
     findAll,
     create,
     update,
+    updateProfile,
     updatePassword,
     remove,
 };

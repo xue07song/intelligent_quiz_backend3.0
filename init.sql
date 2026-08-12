@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS `users` (
   password VARCHAR(255) NOT NULL COMMENT 'bcrypt 加密密码',
   role ENUM('admin','teacher','student') NOT NULL DEFAULT 'student' COMMENT '角色：admin管理员 teacher教师 student学生',
   nickname VARCHAR(50) COMMENT '昵称',
+  email VARCHAR(255) NULL COMMENT '邮箱',
+  phone VARCHAR(50) NULL COMMENT '手机号',
+  school VARCHAR(255) NULL COMMENT '学校',
+  college VARCHAR(255) NULL COMMENT '学院',
   status TINYINT NOT NULL DEFAULT 1 COMMENT '账号状态：1启用 0禁用',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
@@ -141,3 +145,16 @@ CREATE TABLE IF NOT EXISTS `feedbacks` (
   INDEX idx_category (category),
   INDEX idx_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户反馈表';
+
+-- ==================== 个人中心模块表 ====================
+
+-- 用户收藏题目表（学生个人中心标记题目）
+CREATE TABLE IF NOT EXISTS `user_favorites` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '收藏ID',
+  user_id INT NOT NULL COMMENT '用户ID',
+  question_id VARCHAR(50) NOT NULL COMMENT '题目ID',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '收藏时间',
+  UNIQUE KEY uk_user_question (user_id, question_id),
+  INDEX idx_user (user_id),
+  INDEX idx_question (question_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户收藏题目表';
