@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const routes = require('./routes');
+const studentRoutes = require('./routes/student');
 const errorHandler = require('./middlewares/errorHandler');
 
 const app = express();
@@ -15,6 +16,7 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/api/v1', routes);
+app.use('/api/student', studentRoutes);
 
 // 托管前端静态文件
 const frontendDist = path.join(__dirname, '../../intelligent-quiz-frontend2.0/dist');
