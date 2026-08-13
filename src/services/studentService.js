@@ -19,6 +19,22 @@ const getProfile = async (userId) => {
         error.errorCode = 40402;
         throw error;
     }
+    // 教师附带所教科目（个人信息页展示）
+    if (user.role === 'teacher') {
+        user.subjects = await userModel.getTeacherSubjects(user.id);
+    } else {
+        user.subjects = null;
+    }
+    // 学生附带所属班级
+    if (user.role === 'student') {
+        const classModel = require('../models/classModel');
+        const cls = await classModel.findClassByStudent(user.id);
+        user.classId = cls ? cls.class_id : null;
+        user.className = cls ? cls.class_name : null;
+    } else {
+        user.classId = null;
+        user.className = null;
+    }
     return user;
 };
 

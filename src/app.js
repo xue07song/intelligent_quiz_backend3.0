@@ -16,7 +16,7 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/api/v1', routes);
-app.use('/api/student', studentRoutes);
+app.use('/api/student', require('./routes/student'));
 
 // 托管前端静态文件
 const frontendDist = path.join(__dirname, '../../intelligent_quiz_fronted3.0/dist');

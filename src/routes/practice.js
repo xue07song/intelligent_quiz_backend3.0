@@ -35,6 +35,12 @@ router.get('/exams', practiceController.listExams);
 // 试卷详情（含题目）
 router.get('/exams/:id', practiceController.getExam);
 
+// 试卷维度分析（每题正确率 + 学生成绩 + 整体统计 + 班级对比 + 分数段）
+router.get('/exams/:id/analytics', requireRoles('admin', 'teacher'), practiceController.examAnalytics);
+
+// 单题详情：某试卷某道题每个学生的作答情况
+router.get('/exams/:id/questions/:questionId/details', requireRoles('admin', 'teacher'), practiceController.questionDetail);
+
 // 提交答卷（自动评分）
 router.post('/exams/:id/submit', requireRoles('student'), practiceController.submit);
 

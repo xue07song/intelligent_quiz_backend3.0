@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const userModel = require('../models/userModel');
+const { filterValidSubjects } = require('../config/subjects');
 
 const SALT_ROUNDS = 10;
 const VALID_ROLES = ['admin', 'teacher', 'student'];
@@ -15,6 +16,12 @@ const getUser = async (id) => {
         error.statusCode = 404;
         error.errorCode = 40402;
         throw error;
+    }
+    // 教师附带所教科目
+    if (user.role === 'teacher') {
+        user.subjects = await userModel.getTeacherSubjects(user.id);
+    } else {
+        user.subjects = null;
     }
     return user;
 };
@@ -42,13 +49,24 @@ const createUser = async (data) => {
     }
 
     const hashedPassword = bcrypt.hashSync(data.password, SALT_ROUNDS);
-    return userModel.create({
+    const result = await userModel.create({
         username: data.username,
         password: hashedPassword,
         role: data.role,
         nickname: data.nickname,
         status: data.status ?? 1,
     });
+
+    // 教师创建后写入科目关联
+    if (data.role === 'teacher') {
+        const subjects = filterValidSubjects(data.subjects);
+        const newId = result.insertId;
+        if (newId) {
+            await userModel.setTeacherSubjects(newId, subjects);
+        }
+    }
+
+    return result;
 };
 
 const updateUser = async (id, data) => {
@@ -65,6 +83,21 @@ const updateUser = async (id, data) => {
         error.errorCode = 40002;
         throw error;
     }
+
+    // 目标角色：若传了 role 用新 role，否则沿用原 role
+    const targetRole = data.role !== undefined ? data.role : existing.role;
+
+    // 若目标角色是教师且请求带 subjects 字段，则全量替换科目
+    if (targetRole === 'teacher' && data.subjects !== undefined) {
+        const subjects = filterValidSubjects(data.subjects);
+        await userModel.setTeacherSubjects(id, subjects);
+    }
+
+    // 若角色由教师变为非教师，清空其科目关联
+    if (existing.role === 'teacher' && targetRole !== 'teacher') {
+        await userModel.clearTeacherSubjects(id);
+    }
+
     return userModel.update(id, data);
 };
 
@@ -110,6 +143,15 @@ const deleteUser = async (id) => {
         error.statusCode = 404;
         error.errorCode = 40402;
         throw error;
+    }
+    // 删除教师时一并清理科目关联
+    if (existing.role === 'teacher') {
+        await userModel.clearTeacherSubjects(id);
+    }
+    // 删除学生时清理分班记录
+    if (existing.role === 'student') {
+        const classModel = require('../models/classModel');
+        await classModel.clearByStudent(id);
     }
     return userModel.remove(id);
 };

@@ -1,25 +1,57 @@
 const practiceModel = require('../models/practiceModel');
 const { OBJECTIVE_TYPES } = practiceModel;
 const { buildInventory, analyzeRuleExamConfiguration, assembleRuleExam } = require('../algorithms/examRuleEngine');
+const { isValidSubject } = require('../config/subjects');
+
+const makeError = (message, statusCode, errorCode) => {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    error.errorCode = errorCode;
+    return error;
+};
+
+// 解析操作者上下文：教师返回所教科目数组；管理员返回 null（不限制）
+const getActorSubjects = async (actor) => {
+    if (!actor || actor.role !== 'teacher') return null;
+    const userModel = require('../models/userModel');
+    return userModel.getTeacherSubjects(actor.id);
+};
+
+// 校验组卷科目：教师必须在所教科目内；管理员仅校验合法性
+const resolveExamSubject = async (subject, teacherSubjects) => {
+    if (subject === undefined || subject === null || String(subject).trim() === '') {
+        if (teacherSubjects !== null) {
+            // 教师组卷必须指定科目
+            throw makeError('请选择组卷科目', 400, 40001);
+        }
+        return null; // 管理员可不指定
+    }
+    const s = String(subject).trim();
+    if (!isValidSubject(s)) {
+        throw makeError(`科目「${s}」不在合法科目列表中`, 400, 40002);
+    }
+    if (teacherSubjects !== null && !teacherSubjects.includes(s)) {
+        throw makeError(`无权使用科目「${s}」组卷，请选择您所教的科目`, 403, 40303);
+    }
+    return s;
+};
 
 // 随机组卷
-const generateExam = async (userId, options) => {
-    const { 章节, 题型, 难度, count = 10, title } = options;
+const generateExam = async (userId, options, actor) => {
+    const { 章节, 题型, 难度, count = 10, title, subject, classId } = options;
     const numCount = Number(count) || 10;
 
     if (numCount < 1 || numCount > 100) {
-        const error = new Error('题目数量需在 1-100 之间');
-        error.statusCode = 400;
-        error.errorCode = 40001;
-        throw error;
+        throw makeError('题目数量需在 1-100 之间', 400, 40001);
     }
 
-    const questions = await practiceModel.randomPick({ 章节, 题型, 难度, count: numCount });
+    // 科目权限校验：教师组卷必须指定且在自己科目内
+    const teacherSubjects = await getActorSubjects(actor);
+    const finalSubject = await resolveExamSubject(subject, teacherSubjects);
+
+    const questions = await practiceModel.randomPick({ 章节, 题型, 难度, count: numCount, 科目: finalSubject });
     if (questions.length === 0) {
-        const error = new Error('题库中没有符合条件的题目，请调整筛选条件');
-        error.statusCode = 404;
-        error.errorCode = 40401;
-        throw error;
+        throw makeError('题库中没有符合条件的题目，请调整筛选条件', 404, 40401);
     }
 
     // 生成试卷标题
@@ -32,22 +64,39 @@ const generateExam = async (userId, options) => {
         questionType: 题型,
         difficulty: 难度,
         questions,
+        subject: finalSubject,
+        classId: classId || null,
     });
 
     return { examId, title: examTitle, total: questions.length, objectiveCount, questions };
 };
 
-const getExamInventory = async ({ chapters = [] } = {}) => {
-    const candidates = await practiceModel.findRuleExamCandidates({ chapters });
+const getExamInventory = async ({ chapters = [], subject } = {}, actor) => {
+    const teacherSubjects = await getActorSubjects(actor);
+    // 教师限定为自己科目；管理员可按传入 subject 过滤或不限
+    let subjects = [];
+    if (teacherSubjects !== null) {
+        subjects = teacherSubjects;
+    } else if (subject) {
+        subjects = [String(subject).trim()];
+    }
+    const candidates = await practiceModel.findRuleExamCandidates({ chapters, subjects });
     return buildInventory(candidates).report;
 };
 
-const previewRuleExam = async (options = {}) => {
+const previewRuleExam = async (options = {}, actor) => {
     const {
         chapters = [], count = 20, typeDistribution,
-        difficultyDistribution, minKnowledgePoints = 1,
+        difficultyDistribution, minKnowledgePoints = 1, subject,
     } = options;
-    const candidates = await practiceModel.findRuleExamCandidates({ chapters });
+    const teacherSubjects = await getActorSubjects(actor);
+    let subjects = [];
+    if (teacherSubjects !== null) {
+        subjects = teacherSubjects;
+    } else if (subject) {
+        subjects = [String(subject).trim()];
+    }
+    const candidates = await practiceModel.findRuleExamCandidates({ chapters, subjects });
     return analyzeRuleExamConfiguration({
         rawQuestions: candidates,
         count: Number(count),
@@ -57,26 +106,31 @@ const previewRuleExam = async (options = {}) => {
     });
 };
 
-const generateRuleExam = async (userId, options = {}) => {
+const generateRuleExam = async (userId, options = {}, actor) => {
     const {
         title, chapters = [], count = 20,
         typeDistribution, difficultyDistribution, minKnowledgePoints = 1,
+        subject, classId,
     } = options;
     const numCount = Number(count);
     if (!Number.isInteger(numCount) || numCount < 1 || numCount > 100) {
-        const error = new Error('题目数量需为 1-100 之间的整数');
-        error.statusCode = 400;
-        error.errorCode = 40001;
-        throw error;
+        throw makeError('题目数量需为 1-100 之间的整数', 400, 40001);
     }
     const pointCount = Number(minKnowledgePoints);
     if (!Number.isInteger(pointCount) || pointCount < 1 || pointCount > 111) {
-        const error = new Error('知识点覆盖数量必须为正整数');
-        error.statusCode = 400;
-        error.errorCode = 40001;
-        throw error;
+        throw makeError('知识点覆盖数量必须为正整数', 400, 40001);
     }
-    const candidates = await practiceModel.findRuleExamCandidates({ chapters });
+    // 科目权限校验
+    const teacherSubjects = await getActorSubjects(actor);
+    const finalSubject = await resolveExamSubject(subject, teacherSubjects);
+
+    let subjects = [];
+    if (teacherSubjects !== null) {
+        subjects = teacherSubjects;
+    } else if (finalSubject) {
+        subjects = [finalSubject];
+    }
+    const candidates = await practiceModel.findRuleExamCandidates({ chapters, subjects });
     const { questions, report } = assembleRuleExam({
         rawQuestions: candidates,
         count: numCount,
@@ -92,30 +146,48 @@ const generateRuleExam = async (userId, options = {}) => {
         questionType: '规则分布',
         difficulty: '五级分布',
         questions,
+        subject: finalSubject,
+        classId: classId || null,
     });
     return { examId, title: examTitle, total: questions.length, objectiveCount, report, questions };
 };
 
 // 获取试卷列表
 const getExams = async (userId, userRole, options) => {
+    // 学生：注入其所属班级用于过滤可见试卷
+    if (userRole === 'student') {
+        const classModel = require('../models/classModel');
+        const cls = await classModel.findClassByStudent(userId);
+        options = { ...options, classId: cls ? cls.class_id : null };
+    }
     return practiceModel.findExamsByScope(userId, userRole, options);
 };
 
-// 获取试卷详情（校验所属权）
+// 获取试卷详情（校验所属权 + 班级可见性）
 const getExam = async (examId, userId, userRole = 'student') => {
     const exam = await practiceModel.findExamById(examId);
     if (!exam) {
-        const error = new Error('试卷不存在');
-        error.statusCode = 404;
-        error.errorCode = 40401;
-        throw error;
+        throw makeError('试卷不存在', 404, 40401);
     }
-    const canView = exam.user_id === userId || ((userRole === 'student' || userRole === 'admin') && exam.creator_role === 'teacher');
+    // 教师：只能看自己出的卷子
+    if (userRole === 'teacher' && exam.user_id !== userId) {
+        throw makeError('无权查看此试卷', 403, 40301);
+    }
+    // 学生：只能看教师出的、且对本人班级开放（class_id 为 null 表示全班级开放）的卷子
+    if (userRole === 'student' && exam.creator_role === 'teacher') {
+        if (exam.class_id) {
+            const classModel = require('../models/classModel');
+            const cls = await classModel.findClassByStudent(userId);
+            if (!cls || cls.class_id !== exam.class_id) {
+                throw makeError('无权查看此试卷：不在您所在班级范围内', 403, 40301);
+            }
+        }
+    }
+    // 学生看自己组卷的卷子（user_id===userId）允许
+    // 管理员可看所有
+    const canView = exam.user_id === userId || userRole === 'admin' || (userRole === 'student' && exam.creator_role === 'teacher');
     if (!canView) {
-        const error = new Error('无权查看此试卷');
-        error.statusCode = 403;
-        error.errorCode = 40301;
-        throw error;
+        throw makeError('无权查看此试卷', 403, 40301);
     }
     return exam;
 };
@@ -124,25 +196,24 @@ const getExam = async (examId, userId, userRole = 'student') => {
 const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
     const exam = await practiceModel.findExamById(examId);
     if (!exam) {
-        const error = new Error('试卷不存在');
-        error.statusCode = 404;
-        error.errorCode = 40401;
-        throw error;
+        throw makeError('试卷不存在', 404, 40401);
     }
     const canSubmit = userRole === 'student' && exam.creator_role === 'teacher';
     if (!canSubmit) {
-        const error = new Error('无权提交此试卷');
-        error.statusCode = 403;
-        error.errorCode = 40301;
-        throw error;
+        throw makeError('无权提交此试卷', 403, 40301);
+    }
+    // 班级可见性校验
+    if (exam.class_id) {
+        const classModel = require('../models/classModel');
+        const cls = await classModel.findClassByStudent(userId);
+        if (!cls || cls.class_id !== exam.class_id) {
+            throw makeError('无权提交此试卷：不在您所在班级范围内', 403, 40301);
+        }
     }
 
     // answers: [{ questionId, userAnswer }]
     if (!Array.isArray(answers)) {
-        const error = new Error('answers 必须为数组');
-        error.statusCode = 400;
-        error.errorCode = 40001;
-        throw error;
+        throw makeError('answers 必须为数组', 400, 40001);
     }
 
     // 取出本试卷所有题目（含正确答案）
@@ -280,16 +351,10 @@ const getRecords = async (userId, userRole, options) => {
 const getRecord = async (recordId, userId) => {
     const record = await practiceModel.findRecordById(recordId);
     if (!record) {
-        const error = new Error('答题记录不存在');
-        error.statusCode = 404;
-        error.errorCode = 40401;
-        throw error;
+        throw makeError('答题记录不存在', 404, 40401);
     }
     if (record.user_id !== userId) {
-        const error = new Error('无权查看此答题记录');
-        error.statusCode = 403;
-        error.errorCode = 40301;
-        throw error;
+        throw makeError('无权查看此答题记录', 403, 40301);
     }
     return record;
 };
@@ -338,10 +403,7 @@ const adminListUserRecords = async (callerRole, targetUserId, { page, pageSize }
     if (callerRole === 'teacher') {
         const targetUser = await practiceModel.findUserById(targetUserId);
         if (!targetUser || targetUser.role !== 'student') {
-            const error = new Error('教师只能查看学生的做题记录');
-            error.statusCode = 403;
-            error.errorCode = 40301;
-            throw error;
+            throw makeError('教师只能查看学生的做题记录', 403, 40301);
         }
     }
     return practiceModel.findRecordsByUserId(targetUserId, { page, pageSize });
@@ -352,10 +414,7 @@ const adminGetUserStats = async (callerRole, targetUserId) => {
     if (callerRole === 'teacher') {
         const targetUser = await practiceModel.findUserById(targetUserId);
         if (!targetUser || targetUser.role !== 'student') {
-            const error = new Error('教师只能查看学生的统计数据');
-            error.statusCode = 403;
-            error.errorCode = 40301;
-            throw error;
+            throw makeError('教师只能查看学生的统计数据', 403, 40301);
         }
     }
     return practiceModel.getUserStatistics(targetUserId);
@@ -365,18 +424,12 @@ const adminGetUserStats = async (callerRole, targetUserId) => {
 const adminGetRecord = async (callerRole, recordId) => {
     const record = await practiceModel.findRecordById(recordId);
     if (!record) {
-        const error = new Error('答题记录不存在');
-        error.statusCode = 404;
-        error.errorCode = 40401;
-        throw error;
+        throw makeError('答题记录不存在', 404, 40401);
     }
     if (callerRole === 'teacher') {
         const targetUser = await practiceModel.findUserById(record.user_id);
         if (!targetUser || (targetUser.role !== 'student' && targetUser.role !== 'teacher')) {
-            const error = new Error('教师只能查看教师和学生的答题记录');
-            error.statusCode = 403;
-            error.errorCode = 40301;
-            throw error;
+            throw makeError('教师只能查看教师和学生的答题记录', 403, 40301);
         }
     }
     return record;
@@ -452,6 +505,35 @@ const adminGetAllStatsByUser = async (callerRole, { role } = {}) => {
     return { total: users.length, users };
 };
 
+// 试卷维度分析：每题正确率 + 学生成绩 + 整体统计 + 班级对比 + 分数段
+const getExamAnalytics = async (caller, examId) => {
+    const exam = await practiceModel.findExamById(examId);
+    if (!exam) {
+        throw makeError('试卷不存在', 404, 40401);
+    }
+    // 权限校验：教师只能查看自己创建的试卷分析；管理员可查看所有
+    if (caller.role === 'teacher' && exam.user_id !== caller.id) {
+        throw makeError('无权查看此试卷的分析数据', 403, 40301);
+    }
+    return practiceModel.getExamAnalytics(examId);
+};
+
+// 单题详情：某试卷某道题每个学生的作答情况
+const getQuestionDetail = async (caller, examId, questionId) => {
+    const exam = await practiceModel.findExamById(examId);
+    if (!exam) {
+        throw makeError('试卷不存在', 404, 40401);
+    }
+    if (caller.role === 'teacher' && exam.user_id !== caller.id) {
+        throw makeError('无权查看此试卷的分析数据', 403, 40301);
+    }
+    const result = await practiceModel.getQuestionStudentDetail(examId, questionId);
+    if (!result) {
+        throw makeError('该题目不存在或不在此试卷中', 404, 40402);
+    }
+    return result;
+};
+
 module.exports = {
     generateExam,
     getExamInventory,
@@ -469,4 +551,6 @@ module.exports = {
     adminGetUserStats,
     adminGetRecord,
     adminGetAllStatsByUser,
+    getExamAnalytics,
+    getQuestionDetail,
 };
