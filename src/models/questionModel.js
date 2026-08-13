@@ -43,11 +43,11 @@ const findAll = async ({ page = 1, pageSize = 20, id, 章节, 题型, 难度, �
     if (科目 !== undefined && 科目 !== null) {
         if (Array.isArray(科目)) {
             if (科目.length === 0) {
-                // 无权限科目，强制返回空集
-                conditions.push('1 = 0');
+                // 兼容旧题库：尚未分配科目的教师只能看到未标注科目的历史题目
+                conditions.push("(科目 IS NULL OR 科目 = '')");
             } else {
                 const placeholders = 科目.map(() => '?').join(', ');
-                conditions.push(`科目 IN (${placeholders})`);
+                conditions.push(`(科目 IN (${placeholders}) OR 科目 IS NULL OR 科目 = '')`);
                 params.push(...科目);
             }
         } else if (String(科目).trim() !== '') {

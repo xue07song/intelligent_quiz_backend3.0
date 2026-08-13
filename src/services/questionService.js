@@ -47,10 +47,6 @@ const getQuestions = async (options, actor) => {
         // 非教师：按调用方传入的 科目 参数过滤（可为空=不过滤）
         return questionModel.findAll(options);
     }
-    // 教师：无任何科目 -> 返回空
-    if (teacherSubjects.length === 0) {
-        return { rows: [], total: 0 };
-    }
     // 教师传了具体 科目 -> 必须在其所教科目内
     if (options.科目 !== undefined && options.科目 !== null && String(options.科目).trim() !== '') {
         const s = String(options.科目).trim();
