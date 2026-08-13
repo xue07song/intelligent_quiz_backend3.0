@@ -9,6 +9,7 @@ const classRoutes = require('./class');
 const auth = require('../middlewares/auth');
 const { success } = require('../utils/response');
 const { SUBJECTS } = require('../config/subjects');
+const aiAssistantRoutes = require('./aiAssistant');
 
 const router = express.Router();
 
@@ -24,5 +25,6 @@ router.use('/classes', classRoutes);
 router.get('/subjects', auth, (req, res) => {
     res.json(success(SUBJECTS));
 });
+router.use('/ai-assistant', aiAssistantRoutes);
 
 module.exports = router;
