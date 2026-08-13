@@ -41,6 +41,10 @@ router.get('/exams/:id/analytics', requireRoles('admin', 'teacher'), practiceCon
 // 单题详情：某试卷某道题每个学生的作答情况
 router.get('/exams/:id/questions/:questionId/details', requireRoles('admin', 'teacher'), practiceController.questionDetail);
 
+// 答题草稿（本人保存 / 读取）
+router.get('/exams/:id/draft', requireRoles('student'), practiceController.getExamDraft);
+router.put('/exams/:id/draft', requireRoles('student'), practiceController.saveExamDraft);
+
 // 提交答卷（自动评分）
 router.post('/exams/:id/submit', requireRoles('student'), practiceController.submit);
 

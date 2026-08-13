@@ -320,6 +320,9 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
         answers: answerRecords,
     });
 
+    // 提交成功后清理草稿（若草稿不存在则忽略）
+    try { await practiceModel.deleteDraft(userId, examId); } catch (_) { /* ignore */ }
+
     return {
         recordId,
         totalCount: exam.questions.length,
@@ -335,30 +338,52 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
     };
 };
 
-// 客观题判分逻辑
+// 客观题判分逻辑（加强版，兼容判断多语义、填空多分隔符/半角全角/多空按分号或竖线匹配）
 const checkAnswer = (type, userAnswer, correctAnswer) => {
     if (type === 1) {
         const booleanValue = (value) => {
-            const text = String(value).trim().toLowerCase();
-            if (['t', 'true', '正确', '对', '是', '√', '1'].includes(text)) return 'T';
-            if (['f', 'false', '错误', '错', '否', '×', '0'].includes(text)) return 'F';
+            const text = String(value || '').trim().toLowerCase();
+            const t = ['t', 'true', '正确', '对', '是', '√', '1', '✓', '✔', '对的', '是的', '正确的'];
+            const f = ['f', 'false', '错误', '错', '否', '×', '0', '✗', '✘', 'x', 'X', '不对', '不是', '错的', '错误的'];
+            if (t.includes(text)) return 'T';
+            if (f.includes(text)) return 'F';
+            // 把各种 Unicode 空白去掉后再判断一次
+            const stripped = text.replace(/\s+|。|\./g, '');
+            if (t.includes(stripped)) return 'T';
+            if (f.includes(stripped)) return 'F';
             return text.toUpperCase();
         };
         return booleanValue(userAnswer) === booleanValue(correctAnswer);
     }
     if (type === 3) {
-        // 多选题：排序后比较（如 "BCA" vs "ABC" 视为相同）
-        const normalize = (s) => s.toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
-        return normalize(userAnswer) === normalize(correctAnswer);
-    } else if (type === 4) {
-        // 填空题：去空格、去标点后比较
-        const normalize = (s) => s.replace(/\s+/g, '').replace(/[，。、；：""''（）()【】\[\]]/g, '').toLowerCase();
-        return normalize(userAnswer) === normalize(correctAnswer);
-    } else {
-        // 判断题、单选题：直接比较（兼容中英文、大小写）
-        const normalize = (s) => String(s).trim().toUpperCase();
+        // 多选题：排序后比较（如 "BCA" vs "ABC" vs "ABC;" 视为相同；同时兼容中文分号/顿号/逗号分隔）
+        const normalize = (s) => String(s || '')
+            .replace(/[;；,，、]/g, '').replace(/\s+/g, '')
+            .toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
         return normalize(userAnswer) === normalize(correctAnswer);
     }
+    if (type === 4) {
+        // 填空题：
+        //  1) 去除空白、中英文标点、括号
+        //  2) 支持多空用 | 或 ; 或 / 分隔，按序比较
+        const normalizeOne = (s) => String(s || '')
+            .replace(/\s+/g, '')
+            .replace(/[，。、；;：:！!？?·""''（）()【】\[\]《》<>、\-—_/\\|,]/g, '')
+            .toLowerCase()
+            // 常见中文等价词（全角半角数字、中文数字等不做复杂替换，先覆盖常用等价）
+            .replace(/％/g, '%').replace(/．/g, '.');
+        const splitMany = (s) => String(s || '').split(/\s*[;；|｜/／]\s*/).map(x => x.trim()).filter(Boolean);
+        const uList = splitMany(userAnswer);
+        const cList = splitMany(correctAnswer);
+        if (uList.length > 1 && cList.length > 1 && uList.length === cList.length) {
+            return uList.every((u, i) => normalizeOne(u) === normalizeOne(cList[i]));
+        }
+        // 单空或分拆不匹配时退化为整体比较
+        return normalizeOne(userAnswer) === normalizeOne(correctAnswer);
+    }
+    // 判断(type=1 已经走了)、单选、其他默认：兼容大小写与前后空白
+    const normalize = (s) => String(s || '').trim().toUpperCase();
+    return normalize(userAnswer) === normalize(correctAnswer);
 };
 
 // 答题记录列表（按角色权限范围查询）
@@ -381,6 +406,29 @@ const getRecord = async (recordId, userId) => {
 // 统计分析
 const getStats = async (userId) => {
     return practiceModel.getStatistics(userId);
+};
+
+// ==================== 答题草稿（学生本人读写） ====================
+const getExamDraft = async (userId, examId) => {
+    // 先通过 getExam 校验可见性（保证同一份班级可见性规则），但不抛异常给草稿返回 null
+    try { await getExam(examId, userId, 'student'); } catch (e) {
+        if (e.statusCode === 403 || e.statusCode === 404) throw e;
+        // 若 getExam 中检查 studentModel.classModel 等异常，先允许本机继续
+    }
+    const draft = await practiceModel.findDraft(userId, examId);
+    return draft || { exam_id: examId, user_id: userId, answers: {}, duration_seconds: 0, updated_at: null };
+};
+
+const saveExamDraft = async (userId, examId, body = {}) => {
+    try { await getExam(examId, userId, 'student'); } catch (e) {
+        if (e.statusCode === 403 || e.statusCode === 404) throw e;
+    }
+    const answers = body.answers || {};
+    if (answers && typeof answers !== 'object') {
+        throw makeError('answers 必须为对象形式 { questionId: userAnswer }', 400, 40001);
+    }
+    const durationSeconds = Math.max(0, Number(body.durationSeconds) || 0);
+    return practiceModel.saveDraft(userId, examId, { answers, durationSeconds });
 };
 
 // 错题本：分页列表
@@ -631,6 +679,8 @@ module.exports = {
     getRecords,
     getRecord,
     getStats,
+    getExamDraft,
+    saveExamDraft,
     listWrongQuestions,
     createWrongExam,
     adminListRecords,

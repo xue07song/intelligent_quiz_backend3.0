@@ -126,10 +126,31 @@ CREATE TABLE IF NOT EXISTS `exam_answers` (
   user_answer TEXT COMMENT '用户作答',
   correct_answer VARCHAR(500) COMMENT '正确答案',
   is_objective TINYINT DEFAULT 1 COMMENT '是否客观题：1是 0否',
-  is_correct TINYINT DEFAULT 2 COMMENT '判分：0错 1对 2未答 3非客观题不判分',
+  is_correct TINYINT DEFAULT 2 COMMENT '判分：0错/需要巩固 1对/正确 2未答 3部分掌握/待复核',
+  review_status VARCHAR(20) DEFAULT NULL COMMENT '教师复核状态：correct/partial/incorrect/review',
+  review_score_rate DECIMAL(5,2) DEFAULT NULL COMMENT '最终得分比例（0-1），仅 review_status=partial 时使用',
+  review_comment VARCHAR(500) DEFAULT NULL COMMENT '教师复核意见',
+  reviewed_by INT DEFAULT NULL COMMENT '执行复核的教师 users.id',
+  reviewed_at DATETIME DEFAULT NULL COMMENT '复核时间',
   INDEX idx_record (record_id),
-  INDEX idx_question (question_id)
+  INDEX idx_question (question_id),
+  INDEX idx_review_status (review_status),
+  INDEX idx_reviewed_by (reviewed_by)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题明细表';
+
+-- 答题草稿表（学生答题中保存临时答案，刷新页面不丢失）
+CREATE TABLE IF NOT EXISTS `exam_drafts` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '草稿ID',
+  exam_id INT NOT NULL COMMENT '试卷ID exams.id',
+  user_id INT NOT NULL COMMENT '学生用户ID users.id',
+  answers JSON DEFAULT NULL COMMENT 'JSON 形式保存 { questionId: userAnswer }',
+  duration_seconds INT DEFAULT 0 COMMENT '已用时间（秒），断网/刷新后可续时',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  UNIQUE KEY uk_exam_user (exam_id, user_id),
+  INDEX idx_user (user_id),
+  INDEX idx_exam (exam_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题草稿表';
 
 -- ==================== 注册审核模块表 ====================
 

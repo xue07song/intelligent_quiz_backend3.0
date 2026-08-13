@@ -199,7 +199,27 @@ const adminGetRecord = async (req, res, next) => {
 
 const reviewSubjectiveAnswer = async (req, res, next) => {
     try {
+        // 管理员只能查看答题记录和最终结果，不能修改学生成绩
+        if (req.user.role === 'admin') {
+            return next(Object.assign(new Error('管理员无权复核主观题答案'), { statusCode: 403 }));
+        }
         res.json(success(await practiceService.reviewSubjectiveAnswer(req.user.id, req.params.answerId, req.body), '复核结果已保存'));
+    } catch (err) { next(err); }
+};
+
+// 草稿：获取
+const getExamDraft = async (req, res, next) => {
+    try {
+        const examId = Number(req.params.id);
+        res.json(success(await practiceService.getExamDraft(req.user.id, examId)));
+    } catch (err) { next(err); }
+};
+
+// 草稿：保存（含续时）
+const saveExamDraft = async (req, res, next) => {
+    try {
+        const examId = Number(req.params.id);
+        res.json(success(await practiceService.saveExamDraft(req.user.id, examId, req.body || {}), '草稿已保存'));
     } catch (err) { next(err); }
 };
 
@@ -236,10 +256,8 @@ const questionDetail = async (req, res, next) => {
 
 module.exports = {
 
-    generate, listExams, getExam, submit, listRecords, getRecord, statistics,
-    wrongQuestions, wrongExam,
-=======
     generate, inventory, previewRule, generateRule, listExams, getExam, submit, listRecords, getRecord, statistics,
+    getExamDraft, saveExamDraft, wrongQuestions, wrongExam,
 
     adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
     reviewSubjectiveAnswer, examAnalytics, questionDetail,

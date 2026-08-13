@@ -2,6 +2,8 @@ const pool = require('../config/db');
 
 const QT_TABLE = '`题库1`';
 const OBJECTIVE_TYPES = [1, 2, 3, 4, 5, 6];
+// 支持所有题型：判断 单选 多选 填空 简答 程序
+const ALL_TYPES = [1, 2, 3, 4, 5, 6];
 
 const normalizeDifficultySql = `CASE
     WHEN q.难度 REGEXP '^[1-5]$' THEN CAST(q.难度 AS UNSIGNED)
@@ -50,7 +52,7 @@ const ensureTables = async () => {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 };
 
-const filters = ({ chapters = [], questionTypes = OBJECTIVE_TYPES, knowledgeKeyword = '', difficulty } = {}, alias = 'q') => {
+const filters = ({ chapters = [], questionTypes = ALL_TYPES, knowledgeKeyword = '', difficulty } = {}, alias = 'q') => {
     const conditions = [`${alias}.题型 IN (${questionTypes.map(() => '?').join(',')})`];
     const params = [...questionTypes];
     if (chapters.length) {
@@ -170,22 +172,30 @@ const findAnswers = async (sessionId) => {
 const findNextQuestion = async (session) => {
     const base = {
         chapters: String(session.chapters || '').split(',').filter(Boolean).map(Number),
-        questionTypes: String(session.question_types).split(',').map(Number),
+        questionTypes: String(session.question_types).split(',').map(Number).filter(t => ALL_TYPES.includes(t)),
         knowledgeKeyword: session.knowledge_keyword || '',
     };
-    const selectedTypes = base.questionTypes;
+    const selectedTypes = base.questionTypes.length > 0 ? base.questionTypes : ALL_TYPES;
+    // 题型轮转：主动覆盖用户选择的题型（按 answered_count 轮询）
     const preferredType = selectedTypes[Number(session.answered_count) % selectedTypes.length];
     const attempts = [
+        // 1) 首选：当前难度 + 当前首选题型
         { ...base, questionTypes: [preferredType], difficulty: session.current_difficulty, fallback: '' },
+        // 2) 同题型相邻难度兜底（难度没有对应题型时，先 ±1、再 ±2 ...）
         ...[1, 2, 3, 4].flatMap((distance) => [session.current_difficulty - distance, session.current_difficulty + distance])
             .filter((value) => value >= 1 && value <= 5)
             .map((difficulty) => ({ ...base, questionTypes: [preferredType], difficulty,
                 fallback: `当前题型没有未做过的 ${session.current_difficulty} 级题，暂时使用 ${difficulty} 级同题型题目。` })),
-        { ...base, difficulty: session.current_difficulty, fallback: '' },
+        // 3) 用户全部已选题型 + 当前难度（题型轮转不动时用整个题型池兜底）
+        { ...base, questionTypes: selectedTypes, difficulty: session.current_difficulty, fallback: '' },
+        // 4) 全部题型 + 当前难度相邻
         ...[1, 2, 3, 4].flatMap((distance) => [session.current_difficulty - distance, session.current_difficulty + distance])
             .filter((value) => value >= 1 && value <= 5)
-            .map((difficulty) => ({ ...base, difficulty, fallback: `当前知识点没有未做过的 ${session.current_difficulty} 级题，暂时使用 ${difficulty} 级题。` })),
-        { ...base, knowledgeKeyword: '', difficulty: session.current_difficulty, fallback: `当前知识点已没有合适题目，暂时改为同一章节的其他知识点。` },
+            .map((difficulty) => ({ ...base, questionTypes: selectedTypes, difficulty,
+                fallback: `当前知识点没有未做过的 ${session.current_difficulty} 级题，暂时使用 ${difficulty} 级题。` })),
+        // 5) 去掉知识点关键字限制，全部题型
+        { ...base, questionTypes: selectedTypes, knowledgeKeyword: '', difficulty: session.current_difficulty,
+            fallback: `当前知识点已没有合适题目，暂时改为同一章节的其他知识点。` },
     ];
     for (const attempt of attempts) {
         const f = filters(attempt);
@@ -253,4 +263,4 @@ const saveAnswerAndState = async ({ session, question, userAnswer, isCorrect, ad
     }
 };
 
-module.exports = { OBJECTIVE_TYPES, ensureTables, getInventory, getChapterInventory, getOverview, getStudentProgress, createSession, findSession, findAnswers, findNextQuestion, findEligibleQuestionById, saveAnswerAndState };
+module.exports = { OBJECTIVE_TYPES, ALL_TYPES, ensureTables, getInventory, getChapterInventory, getOverview, getStudentProgress, createSession, findSession, findAnswers, findNextQuestion, findEligibleQuestionById, saveAnswerAndState };

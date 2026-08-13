@@ -280,7 +280,22 @@ const randomPickByIds = async (ids, count) => {
     return rows;
 };
 
+// 自探测并缓存 exam_answers 列，防止新字段在旧 schema 下炸 SQL
+let cachedAnswerColumns = null;
+const getAnswerColumns = async () => {
+    if (cachedAnswerColumns) return cachedAnswerColumns;
+    try {
+        const [rows] = await pool.query(
+            `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exam_answers'`
+        );
+        cachedAnswerColumns = new Set(rows.map(r => r.COLUMN_NAME));
+    } catch { cachedAnswerColumns = new Set(); }
+    return cachedAnswerColumns;
+};
+
 // 写入答题记录（事务：写 exam_records + exam_answers）
+// exam_answers 写入时同时保存 review_status / review_score_rate（如果 schema 已有这两列）
 const createRecord = async (data) => {
     const conn = await pool.getConnection();
     try {
@@ -300,14 +315,36 @@ const createRecord = async (data) => {
         );
         const recordId = recordResult.insertId;
 
-        const values = data.answers.map((a) => [
-            recordId, a.questionId, a.questionType, a.userAnswer,
-            a.correctAnswer, a.isObjective, a.isCorrect
-        ]);
+        const cols = await getAnswerColumns();
+        const baseCols = ['record_id', 'question_id', 'question_type', 'user_answer', 'correct_answer', 'is_objective', 'is_correct'];
+        const useReviewCols = cols.has('review_status') && cols.has('review_score_rate');
+        const insertCols = useReviewCols ? [...baseCols, 'review_status', 'review_score_rate'] : baseCols;
+        const placeholders = insertCols.map(() => '?').join(', ');
+
+        const values = data.answers.map((a) => {
+            const row = [
+                recordId, a.questionId, a.questionType, a.userAnswer,
+                a.correctAnswer, a.isObjective, a.isCorrect
+            ];
+            if (useReviewCols) {
+                const evalStatus = a.evaluation?.status;
+                const initialReviewStatus =
+                    evalStatus === 'correct' || evalStatus === 'incorrect' ? null
+                    : (evalStatus === 'partial' ? 'partial'
+                    : (evalStatus === 'review' ? 'review'
+                    : (Number(a.isCorrect) === 3 ? 'review' : null)));
+                const initialScoreRate =
+                    initialReviewStatus === 'partial' ? Number(a.evaluation?.scoreRate || 0)
+                    : (initialReviewStatus === 'review' ? 0 : null);
+                row.push(initialReviewStatus, initialScoreRate);
+            }
+            return row;
+        });
         if (values.length > 0) {
             await conn.query(
-                `INSERT INTO \`exam_answers\` (record_id, question_id, question_type, user_answer, correct_answer, is_objective, is_correct) VALUES ?`,
-                [values]
+                `INSERT INTO \`exam_answers\` (${insertCols.map(c => `\`${c}\``).join(', ')}) VALUES ?`,
+                [values],
+                insertCols.slice(0, baseCols.length).reduce((acc, _, i) => (acc[i] = placeholders), Array(insertCols.length).fill('?'))
             );
         }
 
@@ -357,6 +394,37 @@ const reviewAnswer = async ({ answerId, reviewerId, status, scoreRate, comment }
     await pool.query(`UPDATE exam_records SET correct_count=?, wrong_count=?, skipped_count=?, accuracy=?, score=? WHERE id=?`,
         [Number(stats.correct), Number(stats.wrong), Number(stats.skipped), accuracy, accuracy, answer.record_id]);
     return { answerId: Number(answerId), recordId: answer.record_id, status, scoreRate, comment: comment || '', accuracy };
+};
+
+// ==================== 答题草稿 ====================
+
+const findDraft = async (userId, examId) => {
+    const [rows] = await pool.query(
+        `SELECT id, exam_id, user_id, answers, duration_seconds, updated_at
+         FROM exam_drafts WHERE user_id = ? AND exam_id = ? LIMIT 1`,
+        [userId, examId]
+    );
+    if (!rows.length) return null;
+    const r = rows[0];
+    let answers = {};
+    try { answers = r.answers ? JSON.parse(typeof r.answers === 'string' ? r.answers : JSON.stringify(r.answers)) : {}; }
+    catch { answers = {}; }
+    return { id: r.id, exam_id: r.exam_id, user_id: r.user_id, answers, duration_seconds: r.duration_seconds || 0, updated_at: r.updated_at };
+};
+
+const saveDraft = async (userId, examId, { answers, durationSeconds }) => {
+    const payload = typeof answers === 'string' ? answers : JSON.stringify(answers || {});
+    await pool.query(
+        `INSERT INTO exam_drafts (exam_id, user_id, answers, duration_seconds) VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE answers = VALUES(answers), duration_seconds = VALUES(duration_seconds), updated_at = NOW()`,
+        [examId, userId, payload, Number(durationSeconds) || 0]
+    );
+    return findDraft(userId, examId);
+};
+
+const deleteDraft = async (userId, examId) => {
+    const [result] = await pool.query(`DELETE FROM exam_drafts WHERE user_id = ? AND exam_id = ?`, [userId, examId]);
+    return Boolean(result.affectedRows);
 };
 
 // 查询用户答题记录列表（含提交人信息）
