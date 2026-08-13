@@ -2,14 +2,18 @@ const model = require('../models/adaptivePracticeModel');
 const { difficultyGroup, evaluateDifficulty } = require('../algorithms/difficultyAdjustment');
 const subjectiveEvaluation = require('./subjectiveEvaluationService');
 
+// 现在支持所有 6 种题型：判断(1)/单选(2)/多选(3)/填空(4)/简答(5)/程序(6)
+// 客观题为 1/2/3（可 100% 自动判分且立刻出对错），4/5/6 填空/简答/程序走统一评阅（correct/partial/incorrect/review）
+const ALL_TYPES = [1, 2, 3, 4, 5, 6];
+
 const normalizeOptions = (raw = {}) => {
     const chapters = [...new Set((Array.isArray(raw.chapters) ? raw.chapters : []).map(Number)
         .filter((value) => Number.isInteger(value) && value >= 1 && value <= 10))];
-    const questionTypes = [...new Set((Array.isArray(raw.questionTypes) && raw.questionTypes.length ? raw.questionTypes : model.OBJECTIVE_TYPES)
-        .map(Number).filter((value) => model.OBJECTIVE_TYPES.includes(value)))];
+    const questionTypes = [...new Set((Array.isArray(raw.questionTypes) && raw.questionTypes.length ? raw.questionTypes : ALL_TYPES)
+        .map(Number).filter((value) => ALL_TYPES.includes(value)))];
     const knowledgeKeyword = String(raw.knowledgeKeyword || '').trim().slice(0, 100);
     const questionCount = Number(raw.questionCount || 10);
-    if (!questionTypes.length) throw Object.assign(new Error('请至少选择一种可以自动判分的题型'), { statusCode: 400 });
+    if (!questionTypes.length) throw Object.assign(new Error('请至少选择一种题型'), { statusCode: 400 });
     if (!Number.isInteger(questionCount) || questionCount < 5 || questionCount > 50) {
         throw Object.assign(new Error('练习题数需要设置为 5～50 题'), { statusCode: 400 });
     }
@@ -78,24 +82,38 @@ const start = async (userId, raw) => {
 };
 
 const checkAnswer = (type, userAnswer, correctAnswer) => {
-    if (Number(type) === 1) {
+    const t = Number(type);
+    if (t === 1) {
         const booleanValue = (value) => {
-            const text = String(value).trim().toLowerCase();
-            if (['t', 'true', '正确', '对', '是', '√', '1'].includes(text)) return 'T';
-            if (['f', 'false', '错误', '错', '否', '×', '0'].includes(text)) return 'F';
+            const text = String(value || '').trim().toLowerCase();
+            const T = ['t', 'true', '正确', '对', '是', '√', '1', '✓', '✔', '对的', '是的', '正确的'];
+            const F = ['f', 'false', '错误', '错', '否', '×', '0', '✗', '✘', 'x', 'X', '不对', '不是', '错的', '错误的'];
+            if (T.includes(text)) return 'T';
+            if (F.includes(text)) return 'F';
+            const stripped = text.replace(/\s+|。|\./g, '');
+            if (T.includes(stripped)) return 'T';
+            if (F.includes(stripped)) return 'F';
             return text.toUpperCase();
         };
         return booleanValue(userAnswer) === booleanValue(correctAnswer);
     }
-    if (Number(type) === 3) {
-        const normalize = (value) => String(value).toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
+    if (t === 3) {
+        const normalize = (s) => String(s || '').replace(/[;；,，、]/g, '').replace(/\s+/g, '').toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
         return normalize(userAnswer) === normalize(correctAnswer);
     }
-    if (Number(type) === 4) {
-        const normalize = (value) => String(value).replace(/\s+/g, '').replace(/[，。、；："“”'‘’（）()【】\[\]]/g, '').toLowerCase();
-        return normalize(userAnswer) === normalize(correctAnswer);
+    if (t === 4) {
+        const normalizeOne = (s) => String(s || '')
+            .replace(/\s+/g, '')
+            .replace(/[，。、；;：:！!？?·""''（）()【】\[\]《》<>、\-—_/\\|,]/g, '')
+            .toLowerCase().replace(/％/g, '%').replace(/．/g, '.');
+        const splitMany = (s) => String(s || '').split(/\s*[;；|｜/／]\s*/).map(x => x.trim()).filter(Boolean);
+        const uList = splitMany(userAnswer), cList = splitMany(correctAnswer);
+        if (uList.length > 1 && cList.length > 1 && uList.length === cList.length) {
+            return uList.every((u, i) => normalizeOne(u) === normalizeOne(cList[i]));
+        }
+        return normalizeOne(userAnswer) === normalizeOne(correctAnswer);
     }
-    return String(userAnswer).trim().toUpperCase() === String(correctAnswer).trim().toUpperCase();
+    return String(userAnswer || '').trim().toUpperCase() === String(correctAnswer || '').trim().toUpperCase();
 };
 
 const submit = async (userId, sessionId, body = {}) => {

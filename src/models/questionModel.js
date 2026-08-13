@@ -217,6 +217,50 @@ const searchByKeyword = async (keyword, { page = 1, pageSize = 20 } = {}) => {
     return { rows, total };
 };
 
+// 同类题：知识点完全一致
+const findSimilarByKnowledgePoint = async ({ knowledgePoint, excludeId, limit }) => {
+    if (!knowledgePoint) return [];
+    const [rows] = await pool.query(
+        `SELECT id, 题型, 题目, 选项, 难度, 知识点 FROM ${TABLE}
+         WHERE 知识点 = ? AND id != ?
+         ORDER BY RAND() LIMIT ?`,
+        [knowledgePoint, excludeId, Number(limit)]
+    );
+    return rows;
+};
+
+// 同类题：知识点包含匹配
+const findSimilarByKnowledgePointLike = async ({ knowledgePoint, excludeId, limit }) => {
+    if (!knowledgePoint) return [];
+    const [rows] = await pool.query(
+        `SELECT id, 题型, 题目, 选项, 难度, 知识点 FROM ${TABLE}
+         WHERE 知识点 LIKE ? AND id != ?
+         ORDER BY RAND() LIMIT ?`,
+        [`%${knowledgePoint}%`, excludeId, Number(limit)]
+    );
+    return rows;
+};
+
+// 同类题降级：同章节 + 同题型
+const findSimilarByChapterType = async ({ chapter, questionType, excludeId, limit }) => {
+    const conditions = ['id != ?'];
+    const params = [excludeId];
+    if (chapter !== undefined && chapter !== '' && chapter !== null) {
+        conditions.push('章节 = ?');
+        params.push(chapter);
+    }
+    if (questionType !== undefined && questionType !== '' && questionType !== null) {
+        conditions.push('题型 = ?');
+        params.push(Number(questionType));
+    }
+    const [rows] = await pool.query(
+        `SELECT id, 题型, 题目, 选项, 难度, 知识点 FROM ${TABLE}
+         WHERE ${conditions.join(' AND ')} ORDER BY RAND() LIMIT ?`,
+        [...params, Number(limit)]
+    );
+    return rows;
+};
+
 module.exports = {
     create,
     findAll,
@@ -229,4 +273,7 @@ module.exports = {
     batchRemove,
     statistics,
     searchByKeyword,
+    findSimilarByKnowledgePoint,
+    findSimilarByKnowledgePointLike,
+    findSimilarByChapterType,
 };

@@ -112,6 +112,33 @@ const statistics = async (req, res, next) => {
     }
 };
 
+// 错题本列表
+const wrongQuestions = async (req, res, next) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const pageSize = parseInt(req.query.pageSize) || 20;
+        const result = await practiceService.listWrongQuestions(req.user.id, {
+            page,
+            pageSize,
+            chapter: req.query.chapter,
+            questionType: req.query.questionType,
+        });
+        res.json(paginated(result.rows, result.total, page, pageSize));
+    } catch (err) {
+        next(err);
+    }
+};
+
+// 错题重练：基于错题重新组卷
+const wrongExam = async (req, res, next) => {
+    try {
+        const result = await practiceService.createWrongExam(req.user.id, req.body);
+        res.status(201).json(success(result, `✅ 已生成错题重练试卷，共 ${result.total} 题`));
+    } catch (err) {
+        next(err);
+    }
+};
+
 // ==================== 管理端接口 ====================
 
 // 管理端：所有用户答题记录列表（可按角色筛选）
@@ -172,7 +199,27 @@ const adminGetRecord = async (req, res, next) => {
 
 const reviewSubjectiveAnswer = async (req, res, next) => {
     try {
+        // 管理员只能查看答题记录和最终结果，不能修改学生成绩
+        if (req.user.role === 'admin') {
+            return next(Object.assign(new Error('管理员无权复核主观题答案'), { statusCode: 403 }));
+        }
         res.json(success(await practiceService.reviewSubjectiveAnswer(req.user.id, req.params.answerId, req.body), '复核结果已保存'));
+    } catch (err) { next(err); }
+};
+
+// 草稿：获取
+const getExamDraft = async (req, res, next) => {
+    try {
+        const examId = Number(req.params.id);
+        res.json(success(await practiceService.getExamDraft(req.user.id, examId)));
+    } catch (err) { next(err); }
+};
+
+// 草稿：保存（含续时）
+const saveExamDraft = async (req, res, next) => {
+    try {
+        const examId = Number(req.params.id);
+        res.json(success(await practiceService.saveExamDraft(req.user.id, examId, req.body || {}), '草稿已保存'));
     } catch (err) { next(err); }
 };
 
@@ -207,25 +254,11 @@ const questionDetail = async (req, res, next) => {
     }
 };
 
-const wrongQuestions = async (req, res, next) => {
-    try {
-        const page = parseInt(req.query.page) || 1;
-        const pageSize = parseInt(req.query.pageSize) || 20;
-        const result = await practiceService.getWrongQuestions(req.user.id, {
-            page, pageSize, chapter: req.query.chapter, questionType: req.query.questionType,
-        });
-        res.json(paginated(result.rows, result.total, page, pageSize));
-    } catch (err) { next(err); }
-};
-
-const createWrongExam = async (req, res, next) => {
-    try {
-        res.status(201).json(success(await practiceService.createWrongExam(req.user.id, req.body), '错题练习已生成'));
-    } catch (err) { next(err); }
-};
-
 module.exports = {
+
     generate, inventory, previewRule, generateRule, listExams, getExam, submit, listRecords, getRecord, statistics,
+    getExamDraft, saveExamDraft, wrongQuestions, wrongExam,
+
     adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
-    reviewSubjectiveAnswer, examAnalytics, questionDetail, wrongQuestions, createWrongExam,
+    reviewSubjectiveAnswer, examAnalytics, questionDetail,
 };

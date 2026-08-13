@@ -130,7 +130,7 @@ const findExamsByUser = async (userId, { page = 1, pageSize = 20, subject, class
     return { rows, total };
 };
 
-const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, subject, classId, teacherSubjects } = {}) => {
+const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, subject, classId, classIds, teacherSubjects } = {}) => {
     if (userRole === 'teacher') {
         return findExamsByUser(userId, { page, pageSize, subject, classId });
     }
@@ -139,10 +139,14 @@ const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, sub
     const params = [];
     // 学生：只看所属班级的试卷 + 全班级试卷（class_id 为 NULL 表示对所有学生开放）
     if (userRole === 'student') {
-        // 需要 userId 对应的 class_id。这里在 service 层注入 classId，直接用 e.class_id 过滤
-        if (classId !== undefined && classId !== null && classId !== '') {
-            conditions.push('(e.class_id IS NULL OR e.class_id = ?)');
-            params.push(Number(classId));
+        // 多对多模式：支持 classIds 数组（必修+选修）
+        const ids = Array.isArray(classIds) && classIds.length > 0
+            ? classIds.map(Number)
+            : (classId ? [Number(classId)] : []);
+        if (ids.length > 0) {
+            const placeholders = ids.map(() => '?').join(', ');
+            conditions.push(`(e.class_id IS NULL OR e.class_id IN (${placeholders}))`);
+            params.push(...ids);
         } else {
             // 未提供学生班级时，仅看对所有班级开放的试卷
             conditions.push('e.class_id IS NULL');
@@ -191,7 +195,111 @@ const findQuestionsByIds = async (ids) => {
     return rows;
 };
 
+// 错题本：统计当前用户做错的题目数
+const countWrongQuestions = async (userId, { chapter, questionType } = {}) => {
+    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    const params = [userId];
+    if (chapter !== undefined && chapter !== '' && chapter !== null) {
+        conditions.push('q.章节 = ?');
+        params.push(chapter);
+    }
+    if (questionType !== undefined && questionType !== '' && questionType !== null) {
+        conditions.push('q.题型 = ?');
+        params.push(Number(questionType));
+    }
+    const [rows] = await pool.query(
+        `SELECT COUNT(DISTINCT q.id) AS total
+         FROM \`exam_answers\` a
+         INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         INNER JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE ${conditions.join(' AND ')}`,
+        params
+    );
+    return rows[0].total;
+};
+
+// 错题本：分页列出错题
+const findWrongQuestions = async (userId, { page = 1, pageSize = 20, chapter, questionType } = {}) => {
+    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    const params = [userId];
+    if (chapter !== undefined && chapter !== '' && chapter !== null) {
+        conditions.push('q.章节 = ?');
+        params.push(chapter);
+    }
+    if (questionType !== undefined && questionType !== '' && questionType !== null) {
+        conditions.push('q.题型 = ?');
+        params.push(Number(questionType));
+    }
+    const offset = (page - 1) * pageSize;
+    const [rows] = await pool.query(
+        `SELECT q.id, q.章节 AS chapter, q.题型 AS question_type, q.题目 AS title,
+                q.选项 AS options, q.难度 AS difficulty, q.知识点 AS knowledge_point,
+                q.答案 AS correct_answer, COUNT(a.id) AS wrong_count,
+                MAX(r.submitted_at) AS last_wrong_at
+         FROM \`exam_answers\` a
+         INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         INNER JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE ${conditions.join(' AND ')}
+         GROUP BY q.id, q.章节, q.题型, q.题目, q.选项, q.难度, q.知识点, q.答案
+         ORDER BY last_wrong_at DESC
+         LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset]
+    );
+    return rows;
+};
+
+// 错题本：获取全部错题 id（用于错题重练）
+const findWrongQuestionIds = async (userId, { chapter, questionType } = {}) => {
+    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    const params = [userId];
+    if (chapter !== undefined && chapter !== '' && chapter !== null) {
+        conditions.push('q.章节 = ?');
+        params.push(chapter);
+    }
+    if (questionType !== undefined && questionType !== '' && questionType !== null) {
+        conditions.push('q.题型 = ?');
+        params.push(Number(questionType));
+    }
+    const [rows] = await pool.query(
+        `SELECT q.id
+         FROM \`exam_answers\` a
+         INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         INNER JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE ${conditions.join(' AND ')}
+         GROUP BY q.id
+         ORDER BY MAX(r.submitted_at) DESC`,
+        params
+    );
+    return rows.map((r) => r.id);
+};
+
+// 从指定 id 集合中随机抽题（错题重练）
+const randomPickByIds = async (ids, count) => {
+    if (!ids || ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(', ');
+    const [rows] = await pool.query(
+        `SELECT * FROM ${QT_TABLE} WHERE id IN (${placeholders}) ORDER BY RAND() LIMIT ?`,
+        [...ids, Number(count)]
+    );
+    return rows;
+};
+
+// 自探测并缓存 exam_answers 列，防止新字段在旧 schema 下炸 SQL
+let cachedAnswerColumns = null;
+const getAnswerColumns = async () => {
+    if (cachedAnswerColumns) return cachedAnswerColumns;
+    try {
+        const [rows] = await pool.query(
+            `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exam_answers'`
+        );
+        cachedAnswerColumns = new Set(rows.map(r => r.COLUMN_NAME));
+    } catch { cachedAnswerColumns = new Set(); }
+    return cachedAnswerColumns;
+};
+
 // 写入答题记录（事务：写 exam_records + exam_answers）
+// exam_answers 写入时同时保存 review_status / review_score_rate（如果 schema 已有这两列）
 const createRecord = async (data) => {
     const conn = await pool.getConnection();
     try {
@@ -211,14 +319,36 @@ const createRecord = async (data) => {
         );
         const recordId = recordResult.insertId;
 
-        const values = data.answers.map((a) => [
-            recordId, a.questionId, a.questionType, a.userAnswer,
-            a.correctAnswer, a.isObjective, a.isCorrect
-        ]);
+        const cols = await getAnswerColumns();
+        const baseCols = ['record_id', 'question_id', 'question_type', 'user_answer', 'correct_answer', 'is_objective', 'is_correct'];
+        const useReviewCols = cols.has('review_status') && cols.has('review_score_rate');
+        const insertCols = useReviewCols ? [...baseCols, 'review_status', 'review_score_rate'] : baseCols;
+        const placeholders = insertCols.map(() => '?').join(', ');
+
+        const values = data.answers.map((a) => {
+            const row = [
+                recordId, a.questionId, a.questionType, a.userAnswer,
+                a.correctAnswer, a.isObjective, a.isCorrect
+            ];
+            if (useReviewCols) {
+                const evalStatus = a.evaluation?.status;
+                const initialReviewStatus =
+                    evalStatus === 'correct' || evalStatus === 'incorrect' ? null
+                    : (evalStatus === 'partial' ? 'partial'
+                    : (evalStatus === 'review' ? 'review'
+                    : (Number(a.isCorrect) === 3 ? 'review' : null)));
+                const initialScoreRate =
+                    initialReviewStatus === 'partial' ? Number(a.evaluation?.scoreRate || 0)
+                    : (initialReviewStatus === 'review' ? 0 : null);
+                row.push(initialReviewStatus, initialScoreRate);
+            }
+            return row;
+        });
         if (values.length > 0) {
             await conn.query(
-                `INSERT INTO \`exam_answers\` (record_id, question_id, question_type, user_answer, correct_answer, is_objective, is_correct) VALUES ?`,
-                [values]
+                `INSERT INTO \`exam_answers\` (${insertCols.map(c => `\`${c}\``).join(', ')}) VALUES ?`,
+                [values],
+                insertCols.slice(0, baseCols.length).reduce((acc, _, i) => (acc[i] = placeholders), Array(insertCols.length).fill('?'))
             );
         }
 
@@ -268,6 +398,37 @@ const reviewAnswer = async ({ answerId, reviewerId, status, scoreRate, comment }
     await pool.query(`UPDATE exam_records SET correct_count=?, wrong_count=?, skipped_count=?, accuracy=?, score=? WHERE id=?`,
         [Number(stats.correct), Number(stats.wrong), Number(stats.skipped), accuracy, accuracy, answer.record_id]);
     return { answerId: Number(answerId), recordId: answer.record_id, status, scoreRate, comment: comment || '', accuracy };
+};
+
+// ==================== 答题草稿 ====================
+
+const findDraft = async (userId, examId) => {
+    const [rows] = await pool.query(
+        `SELECT id, exam_id, user_id, answers, duration_seconds, updated_at
+         FROM exam_drafts WHERE user_id = ? AND exam_id = ? LIMIT 1`,
+        [userId, examId]
+    );
+    if (!rows.length) return null;
+    const r = rows[0];
+    let answers = {};
+    try { answers = r.answers ? JSON.parse(typeof r.answers === 'string' ? r.answers : JSON.stringify(r.answers)) : {}; }
+    catch { answers = {}; }
+    return { id: r.id, exam_id: r.exam_id, user_id: r.user_id, answers, duration_seconds: r.duration_seconds || 0, updated_at: r.updated_at };
+};
+
+const saveDraft = async (userId, examId, { answers, durationSeconds }) => {
+    const payload = typeof answers === 'string' ? answers : JSON.stringify(answers || {});
+    await pool.query(
+        `INSERT INTO exam_drafts (exam_id, user_id, answers, duration_seconds) VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE answers = VALUES(answers), duration_seconds = VALUES(duration_seconds), updated_at = NOW()`,
+        [examId, userId, payload, Number(durationSeconds) || 0]
+    );
+    return findDraft(userId, examId);
+};
+
+const deleteDraft = async (userId, examId) => {
+    const [result] = await pool.query(`DELETE FROM exam_drafts WHERE user_id = ? AND exam_id = ?`, [userId, examId]);
+    return Boolean(result.affectedRows);
 };
 
 // 查询用户答题记录列表（含提交人信息）
@@ -682,50 +843,19 @@ const getQuestionStudentDetail = async (examId, questionId) => {
     return { question, answers, summary };
 };
 
-const findWrongQuestions = async (userId, { page = 1, pageSize = 20, chapter, questionType } = {}) => {
-    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
-    const params = [userId];
-    if (chapter) { conditions.push('q.章节 = ?'); params.push(Number(chapter)); }
-    if (questionType) { conditions.push('q.题型 = ?'); params.push(Number(questionType)); }
-    const where = conditions.join(' AND ');
-    const [countRows] = await pool.query(
-        `SELECT COUNT(DISTINCT a.question_id) total
-         FROM exam_answers a INNER JOIN exam_records r ON r.id=a.record_id
-         LEFT JOIN ${QT_TABLE} q ON a.question_id=CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
-         WHERE ${where}`,
-        params
-    );
-    const offset = (Number(page) - 1) * Number(pageSize);
+// AI 助手：查询用户最近 N 天错题明细
+const findRecentWrongAnswers = async (userId, { days = 30, limit = 50 } = {}) => {
     const [rows] = await pool.query(
-        `SELECT a.question_id id, MAX(q.题目) title, MAX(q.题型) question_type,
-                MAX(q.难度) difficulty, MAX(q.章节) chapter, MAX(q.知识点) knowledge_point,
-                COUNT(*) wrong_count, MAX(r.submitted_at) last_wrong_at
-         FROM exam_answers a INNER JOIN exam_records r ON r.id=a.record_id
-         LEFT JOIN ${QT_TABLE} q ON a.question_id=CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
-         WHERE ${where}
-         GROUP BY a.question_id ORDER BY last_wrong_at DESC LIMIT ? OFFSET ?`,
-        [...params, Number(pageSize), offset]
-    );
-    return { rows, total: Number(countRows[0].total) };
-};
-
-const findWrongQuestionPool = async (userId, { chapter, questionType, count = 20 } = {}) => {
-    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
-    const params = [userId];
-    if (chapter) { conditions.push('q.章节 = ?'); params.push(Number(chapter)); }
-    if (questionType) { conditions.push('q.题型 = ?'); params.push(Number(questionType)); }
-    const [rows] = await pool.query(
-        `SELECT q.* FROM ${QT_TABLE} q
-         INNER JOIN (SELECT DISTINCT a.question_id FROM exam_answers a
-                     INNER JOIN exam_records r ON r.id=a.record_id
-                     WHERE r.user_id=? AND a.is_correct=0) w
-           ON w.question_id=CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
-         ${chapter || questionType ? `WHERE ${[
-            chapter ? 'q.章节 = ?' : null,
-            questionType ? 'q.题型 = ?' : null,
-         ].filter(Boolean).join(' AND ')}` : ''}
-         ORDER BY RAND() LIMIT ?`,
-        [userId, ...(chapter ? [Number(chapter)] : []), ...(questionType ? [Number(questionType)] : []), Number(count)]
+        `SELECT q.题目 AS title, q.知识点 AS knowledge_point, q.难度 AS difficulty,
+                a.user_answer AS user_answer, a.correct_answer AS correct_answer
+         FROM \`exam_answers\` a
+         INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE r.user_id = ? AND a.is_correct = 0
+           AND r.submitted_at >= NOW() - INTERVAL ? DAY
+         ORDER BY r.submitted_at DESC
+         LIMIT ?`,
+        [userId, Number(days), Number(limit)]
     );
     return rows;
 };
@@ -738,6 +868,10 @@ module.exports = {
     findExamsByScope,
     findExamById,
     findQuestionsByIds,
+    countWrongQuestions,
+    findWrongQuestions,
+    findWrongQuestionIds,
+    randomPickByIds,
     createRecord,
     findRecordsByUser,
     findRecordById,
@@ -751,8 +885,7 @@ module.exports = {
     findUserById,
     getExamAnalytics,
     getQuestionStudentDetail,
-    findWrongQuestions,
-    findWrongQuestionPool,
+    findRecentWrongAnswers,
     OBJECTIVE_TYPES,
     ensureReviewColumns,
     reviewAnswer,

@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   major VARCHAR(50) DEFAULT NULL COMMENT '专业',
   grade VARCHAR(20) DEFAULT NULL COMMENT '年级，如 2024级',
   title VARCHAR(50) DEFAULT NULL COMMENT '职称（教师用），如 讲师/副教授/教授',
+  class_id INT DEFAULT NULL COMMENT '主必修班ID（冗余字段，快速查询用；实际归属以 student_classes 为准）',
   status TINYINT NOT NULL DEFAULT 1 COMMENT '账号状态：1启用 0禁用',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
@@ -49,6 +50,21 @@ CREATE TABLE IF NOT EXISTS `users` (
 -- 默认管理员账号（用户名: admin / 密码: admin123）
 INSERT IGNORE INTO `users` (username, password, role, nickname)
 VALUES ('admin', '$2b$10$jndatEvivNWlc8LYBlgOm.oGt60gq5PrNV6/s4BtyKJLhgBeizoZ2', 'admin', '系统管理员');
+
+-- 注册申请表（学生/教师自助注册，管理员审核）
+CREATE TABLE IF NOT EXISTS `registration_requests` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '注册申请ID',
+  username VARCHAR(50) NOT NULL COMMENT '申请用户名',
+  password VARCHAR(255) NOT NULL COMMENT 'bcrypt 加密密码',
+  role ENUM('student','teacher') NOT NULL DEFAULT 'student' COMMENT '申请角色',
+  nickname VARCHAR(50) NULL COMMENT '昵称',
+  status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending' COMMENT '审核状态',
+  reject_reason VARCHAR(255) NULL COMMENT '拒绝原因',
+  handled_by INT NULL COMMENT '处理人ID',
+  handled_at TIMESTAMP NULL COMMENT '处理时间',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '申请时间',
+  UNIQUE KEY uk_registration_username (username)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='注册申请表';
 
 -- ==================== 练习模块表 ====================
 
@@ -111,10 +127,31 @@ CREATE TABLE IF NOT EXISTS `exam_answers` (
   user_answer TEXT COMMENT '用户作答',
   correct_answer VARCHAR(500) COMMENT '正确答案',
   is_objective TINYINT DEFAULT 1 COMMENT '是否客观题：1是 0否',
-  is_correct TINYINT DEFAULT 2 COMMENT '判分：0错 1对 2未答 3非客观题不判分',
+  is_correct TINYINT DEFAULT 2 COMMENT '判分：0错/需要巩固 1对/正确 2未答 3部分掌握/待复核',
+  review_status VARCHAR(20) DEFAULT NULL COMMENT '教师复核状态：correct/partial/incorrect/review',
+  review_score_rate DECIMAL(5,2) DEFAULT NULL COMMENT '最终得分比例（0-1），仅 review_status=partial 时使用',
+  review_comment VARCHAR(500) DEFAULT NULL COMMENT '教师复核意见',
+  reviewed_by INT DEFAULT NULL COMMENT '执行复核的教师 users.id',
+  reviewed_at DATETIME DEFAULT NULL COMMENT '复核时间',
   INDEX idx_record (record_id),
-  INDEX idx_question (question_id)
+  INDEX idx_question (question_id),
+  INDEX idx_review_status (review_status),
+  INDEX idx_reviewed_by (reviewed_by)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题明细表';
+
+-- 答题草稿表（学生答题中保存临时答案，刷新页面不丢失）
+CREATE TABLE IF NOT EXISTS `exam_drafts` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '草稿ID',
+  exam_id INT NOT NULL COMMENT '试卷ID exams.id',
+  user_id INT NOT NULL COMMENT '学生用户ID users.id',
+  answers JSON DEFAULT NULL COMMENT 'JSON 形式保存 { questionId: userAnswer }',
+  duration_seconds INT DEFAULT 0 COMMENT '已用时间（秒），断网/刷新后可续时',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  UNIQUE KEY uk_exam_user (exam_id, user_id),
+  INDEX idx_user (user_id),
+  INDEX idx_exam (exam_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题草稿表';
 
 -- ==================== 注册审核模块表 ====================
 
@@ -198,19 +235,47 @@ CREATE TABLE IF NOT EXISTS `classes` (
   grade VARCHAR(20) DEFAULT NULL COMMENT '年级（可选）',
   college VARCHAR(100) DEFAULT NULL COMMENT '所属学院',
   major VARCHAR(50) DEFAULT NULL COMMENT '所属专业',
+  type ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '班级类型：compulsory必修 elective选修',
   remark VARCHAR(255) DEFAULT NULL COMMENT '备注',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   UNIQUE KEY uk_name (name),
   INDEX idx_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='班级表';
 
--- 学生-班级关联表（一个学生只属于一个班级）
+-- 学生-班级关联表（多对多：一个学生可同时属于必修班和多个选修班）
 CREATE TABLE IF NOT EXISTS `student_classes` (
   id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
   student_id INT NOT NULL COMMENT '学生用户ID（users.id，role=student）',
   class_id INT NOT NULL COMMENT '班级ID（classes.id）',
+  type ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '关系类型：compulsory必修 elective选修',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '分班时间',
-  UNIQUE KEY uk_student (student_id),
+  UNIQUE KEY uk_student_class (student_id, class_id),
   INDEX idx_class (class_id),
+  INDEX idx_student (student_id),
+  INDEX idx_type (type),
   CONSTRAINT fk_sc_class FOREIGN KEY (class_id) REFERENCES `classes`(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生班级关联表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生班级关联表（多对多）';
+
+-- ==================== 兼容旧库的迁移语句（幂等，可安全重复执行）====================
+
+-- classes 表加 type 字段
+ALTER TABLE `classes` ADD COLUMN IF NOT EXISTS `type` ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '班级类型：compulsory必修 elective选修';
+
+-- users 表加 class_id 冗余字段
+ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `class_id` INT DEFAULT NULL COMMENT '主必修班ID（冗余字段，快速查询用；实际归属以 student_classes 为准）';
+
+-- student_classes 表加 type 字段
+ALTER TABLE `student_classes` ADD COLUMN IF NOT EXISTS `type` ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '关系类型：compulsory必修 elective选修';
+
+-- student_classes 表去掉旧的 student_id 唯一约束（改为多对多），加 (student_id, class_id) 唯一约束
+-- 注意：MySQL 8.0 不支持 IF EXISTS 于 DROP INDEX，需要用存储过程或手动执行
+-- 以下为安全迁移：先检查并删除旧约束，再添加新约束
+SET @old_index_exists = (SELECT COUNT(*) FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_classes' AND INDEX_NAME = 'uk_student');
+SET @sql = IF(@old_index_exists > 0, 'ALTER TABLE `student_classes` DROP INDEX `uk_student`', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @new_index_exists = (SELECT COUNT(*) FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_classes' AND INDEX_NAME = 'uk_student_class');
+SET @sql = IF(@new_index_exists = 0, 'ALTER TABLE `student_classes` ADD UNIQUE KEY `uk_student_class` (`student_id`, `class_id`)', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

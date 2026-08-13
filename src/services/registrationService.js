@@ -103,6 +103,23 @@ const approve = async (id, reviewerId) => {
         status: 1,
     });
 
+    // 学生审核通过后，按学号自动匹配必修班（append 语义：只追加，不删已有其他必修班）
+    if (request.role === 'student' && request.student_no) {
+        try {
+            const createdUser = await userModel.findByUsername(request.username);
+            if (createdUser) {
+                const classModel = require('../models/classModel');
+                const matchedClass = await classModel.matchCompulsoryClassByStudentNo(request.student_no);
+                if (matchedClass) {
+                    // append：保留之前的必修班，只把新匹配到的班级追加进去（INSERT IGNORE）
+                    await classModel.appendCompulsoryClasses(createdUser.id, [matchedClass.id]);
+                }
+            }
+        } catch (_) {
+            // 匹配不到不报错，留待管理员手动分班
+        }
+    }
+
     // 教师审核通过后，自动将申请的科目写入 teacher_subjects 表
     if (request.role === 'teacher' && request.subjects) {
         const subjects = String(request.subjects)

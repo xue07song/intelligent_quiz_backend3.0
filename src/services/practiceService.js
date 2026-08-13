@@ -155,11 +155,12 @@ const generateRuleExam = async (userId, options = {}, actor) => {
 
 // 获取试卷列表
 const getExams = async (userId, userRole, options) => {
-    // 学生：注入其所属班级用于过滤可见试卷
+    // 学生：注入其所属的全部班级（必修+选修）用于过滤可见试卷
     if (userRole === 'student') {
         const classModel = require('../models/classModel');
-        const cls = await classModel.findClassByStudent(userId);
-        options = { ...options, classId: cls ? cls.class_id : null };
+        const allClasses = await classModel.findAllClassesByStudent(userId);
+        const classIds = allClasses.map(c => c.class_id);
+        options = { ...options, classIds: classIds.length ? classIds : null };
     }
     return practiceModel.findExamsByScope(userId, userRole, options);
 };
@@ -178,8 +179,10 @@ const getExam = async (examId, userId, userRole = 'student') => {
     if (userRole === 'student' && exam.creator_role === 'teacher') {
         if (exam.class_id) {
             const classModel = require('../models/classModel');
-            const cls = await classModel.findClassByStudent(userId);
-            if (!cls || cls.class_id !== exam.class_id) {
+            // 多对多模式：学生可能在必修班或选修班中，只要在任意班级即可
+            const allClasses = await classModel.findAllClassesByStudent(userId);
+            const inClass = allClasses.some(c => c.class_id === exam.class_id);
+            if (!inClass) {
                 throw makeError('无权查看此试卷：不在您所在班级范围内', 403, 40301);
             }
         }
@@ -206,8 +209,10 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
     // 班级可见性校验
     if (exam.class_id) {
         const classModel = require('../models/classModel');
-        const cls = await classModel.findClassByStudent(userId);
-        if (!cls || cls.class_id !== exam.class_id) {
+        // 多对多模式：学生可能在必修班或选修班中
+        const allClasses = await classModel.findAllClassesByStudent(userId);
+        const inClass = allClasses.some(c => c.class_id === exam.class_id);
+        if (!inClass) {
             throw makeError('无权提交此试卷：不在您所在班级范围内', 403, 40301);
         }
     }
@@ -320,6 +325,9 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
         answers: answerRecords,
     });
 
+    // 提交成功后清理草稿（若草稿不存在则忽略）
+    try { await practiceModel.deleteDraft(userId, examId); } catch (_) { /* ignore */ }
+
     return {
         recordId,
         totalCount: exam.questions.length,
@@ -335,30 +343,52 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
     };
 };
 
-// 客观题判分逻辑
+// 客观题判分逻辑（加强版，兼容判断多语义、填空多分隔符/半角全角/多空按分号或竖线匹配）
 const checkAnswer = (type, userAnswer, correctAnswer) => {
     if (type === 1) {
         const booleanValue = (value) => {
-            const text = String(value).trim().toLowerCase();
-            if (['t', 'true', '正确', '对', '是', '√', '1'].includes(text)) return 'T';
-            if (['f', 'false', '错误', '错', '否', '×', '0'].includes(text)) return 'F';
+            const text = String(value || '').trim().toLowerCase();
+            const t = ['t', 'true', '正确', '对', '是', '√', '1', '✓', '✔', '对的', '是的', '正确的'];
+            const f = ['f', 'false', '错误', '错', '否', '×', '0', '✗', '✘', 'x', 'X', '不对', '不是', '错的', '错误的'];
+            if (t.includes(text)) return 'T';
+            if (f.includes(text)) return 'F';
+            // 把各种 Unicode 空白去掉后再判断一次
+            const stripped = text.replace(/\s+|。|\./g, '');
+            if (t.includes(stripped)) return 'T';
+            if (f.includes(stripped)) return 'F';
             return text.toUpperCase();
         };
         return booleanValue(userAnswer) === booleanValue(correctAnswer);
     }
     if (type === 3) {
-        // 多选题：排序后比较（如 "BCA" vs "ABC" 视为相同）
-        const normalize = (s) => s.toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
-        return normalize(userAnswer) === normalize(correctAnswer);
-    } else if (type === 4) {
-        // 填空题：去空格、去标点后比较
-        const normalize = (s) => s.replace(/\s+/g, '').replace(/[，。、；：""''（）()【】\[\]]/g, '').toLowerCase();
-        return normalize(userAnswer) === normalize(correctAnswer);
-    } else {
-        // 判断题、单选题：直接比较（兼容中英文、大小写）
-        const normalize = (s) => String(s).trim().toUpperCase();
+        // 多选题：排序后比较（如 "BCA" vs "ABC" vs "ABC;" 视为相同；同时兼容中文分号/顿号/逗号分隔）
+        const normalize = (s) => String(s || '')
+            .replace(/[;；,，、]/g, '').replace(/\s+/g, '')
+            .toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
         return normalize(userAnswer) === normalize(correctAnswer);
     }
+    if (type === 4) {
+        // 填空题：
+        //  1) 去除空白、中英文标点、括号
+        //  2) 支持多空用 | 或 ; 或 / 分隔，按序比较
+        const normalizeOne = (s) => String(s || '')
+            .replace(/\s+/g, '')
+            .replace(/[，。、；;：:！!？?·""''（）()【】\[\]《》<>、\-—_/\\|,]/g, '')
+            .toLowerCase()
+            // 常见中文等价词（全角半角数字、中文数字等不做复杂替换，先覆盖常用等价）
+            .replace(/％/g, '%').replace(/．/g, '.');
+        const splitMany = (s) => String(s || '').split(/\s*[;；|｜/／]\s*/).map(x => x.trim()).filter(Boolean);
+        const uList = splitMany(userAnswer);
+        const cList = splitMany(correctAnswer);
+        if (uList.length > 1 && cList.length > 1 && uList.length === cList.length) {
+            return uList.every((u, i) => normalizeOne(u) === normalizeOne(cList[i]));
+        }
+        // 单空或分拆不匹配时退化为整体比较
+        return normalizeOne(userAnswer) === normalizeOne(correctAnswer);
+    }
+    // 判断(type=1 已经走了)、单选、其他默认：兼容大小写与前后空白
+    const normalize = (s) => String(s || '').trim().toUpperCase();
+    return normalize(userAnswer) === normalize(correctAnswer);
 };
 
 // 答题记录列表（按角色权限范围查询）
@@ -381,6 +411,84 @@ const getRecord = async (recordId, userId) => {
 // 统计分析
 const getStats = async (userId) => {
     return practiceModel.getStatistics(userId);
+};
+
+// ==================== 答题草稿（学生本人读写） ====================
+const getExamDraft = async (userId, examId) => {
+    // 先通过 getExam 校验可见性（保证同一份班级可见性规则），但不抛异常给草稿返回 null
+    try { await getExam(examId, userId, 'student'); } catch (e) {
+        if (e.statusCode === 403 || e.statusCode === 404) throw e;
+        // 若 getExam 中检查 studentModel.classModel 等异常，先允许本机继续
+    }
+    const draft = await practiceModel.findDraft(userId, examId);
+    return draft || { exam_id: examId, user_id: userId, answers: {}, duration_seconds: 0, updated_at: null };
+};
+
+const saveExamDraft = async (userId, examId, body = {}) => {
+    try { await getExam(examId, userId, 'student'); } catch (e) {
+        if (e.statusCode === 403 || e.statusCode === 404) throw e;
+    }
+    const answers = body.answers || {};
+    if (answers && typeof answers !== 'object') {
+        throw makeError('answers 必须为对象形式 { questionId: userAnswer }', 400, 40001);
+    }
+    const durationSeconds = Math.max(0, Number(body.durationSeconds) || 0);
+    return practiceModel.saveDraft(userId, examId, { answers, durationSeconds });
+};
+
+// 错题本：分页列表
+const listWrongQuestions = async (userId, options = {}) => {
+    const page = Math.max(parseInt(options.page) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(options.pageSize) || 20, 1), 100);
+    const filter = {
+        chapter: options.chapter,
+        questionType: options.questionType,
+    };
+    const [rows, total] = await Promise.all([
+        practiceModel.findWrongQuestions(userId, { ...filter, page, pageSize }),
+        practiceModel.countWrongQuestions(userId, filter),
+    ]);
+    return { rows, total };
+};
+
+// 错题本：基于当前错题重新组卷练习
+const createWrongExam = async (userId, options = {}) => {
+    const requestedCount = Math.min(Math.max(Number(options.count) || 20, 1), 100);
+    const filter = {
+        chapter: options.chapter,
+        questionType: options.questionType,
+    };
+
+    const wrongIds = await practiceModel.findWrongQuestionIds(userId, filter);
+    if (wrongIds.length === 0) {
+        const error = new Error('错题本中暂无符合条件的题目，先做一套试卷吧');
+        error.statusCode = 404;
+        error.errorCode = 40401;
+        throw error;
+    }
+
+    const pickCount = Math.min(requestedCount, wrongIds.length);
+    const questions = await practiceModel.randomPickByIds(wrongIds, pickCount);
+    const title = options.title || `错题重练-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
+    const { examId, objectiveCount } = await practiceModel.createExam({
+        userId,
+        title,
+        chapter: options.chapter || null,
+        questionType: options.questionType || null,
+        difficulty: null,
+        questions,
+    });
+
+    return {
+        examId,
+        title,
+        total: questions.length,
+        requestedCount,
+        availableCount: wrongIds.length,
+        truncated: questions.length < requestedCount,
+        objectiveCount,
+        questions,
+    };
 };
 
 // ==================== 管理端 ====================
@@ -565,26 +673,6 @@ const getQuestionDetail = async (caller, examId, questionId) => {
     return result;
 };
 
-const getWrongQuestions = async (userId, options = {}) => {
-    return practiceModel.findWrongQuestions(userId, options);
-};
-
-const createWrongExam = async (userId, options = {}) => {
-    const count = Math.min(Math.max(Number(options.count) || 20, 1), 100);
-    const questions = await practiceModel.findWrongQuestionPool(userId, {
-        chapter: options.chapter,
-        questionType: options.questionType,
-        count,
-    });
-    if (!questions.length) throw makeError('当前筛选条件下没有可重练的错题', 404, 40401);
-    const title = String(options.title || '').trim() || `错题重练-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
-    const created = await practiceModel.createExam({
-        userId, title, chapter: options.chapter, questionType: options.questionType,
-        difficulty: null, questions, subject: null, classId: null,
-    });
-    return { ...created, title, total: questions.length, availableCount: questions.length, truncated: questions.length < count };
-};
-
 module.exports = {
     generateExam,
     getExamInventory,
@@ -596,6 +684,10 @@ module.exports = {
     getRecords,
     getRecord,
     getStats,
+    getExamDraft,
+    saveExamDraft,
+    listWrongQuestions,
+    createWrongExam,
     adminListRecords,
     adminListUsers,
     adminListUserRecords,
@@ -605,6 +697,4 @@ module.exports = {
     adminGetAllStatsByUser,
     getExamAnalytics,
     getQuestionDetail,
-    getWrongQuestions,
-    createWrongExam,
 };

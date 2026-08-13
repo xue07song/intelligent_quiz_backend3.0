@@ -27,7 +27,14 @@ const safeSelectColumns = async (desired) => {
     }).join(', ');
 };
 
-const DESIRED_COLUMNS = ['id', 'username', 'role', 'college', 'major', 'subjects', 'grade', 'student_no', 'employee_no', 'title', 'status', 'reject_reason', 'reviewed_by', 'reviewed_at', 'created_at', 'updated_at'];
+const DESIRED_COLUMNS = [
+    'id', 'username', 'nickname', 'password', 'role',
+    'college', 'major', 'subjects', 'grade',
+    'student_no', 'employee_no', 'title',
+    'status', 'reject_reason',
+    'handled_by', 'handled_at', 'reviewed_by', 'reviewed_at',
+    'created_at', 'updated_at',
+];
 
 const findById = async (id) => {
     const cols = await safeSelectColumns([...DESIRED_COLUMNS, 'password']);
@@ -67,6 +74,7 @@ const INSERT_DESIRED = [
     { col: 'username', key: 'username' },
     { col: 'password', key: 'password' },
     { col: 'role', key: 'role' },
+    { col: 'nickname', key: 'nickname' },
     { col: 'college', key: 'college' },
     { col: 'major', key: 'major' },
     { col: 'subjects', key: 'subjects' },
@@ -99,18 +107,71 @@ const create = async (data) => {
     return result;
 };
 
+const reset = async (id, data) => {
+    const [result] = await pool.query(
+        `UPDATE ${TABLE}
+         SET password = ?, role = ?, nickname = ?, status = 'pending',
+             reject_reason = NULL, handled_by = NULL, handled_at = NULL,
+             reviewed_by = NULL, reviewed_at = NULL,
+             created_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [data.password, data.role, data.nickname ?? null, id]
+    );
+    return result;
+};
+
+const markApproved = async (id, handledBy) => {
+    const [result] = await pool.query(
+        `UPDATE ${TABLE} SET status = 'approved',
+             handled_by = ?, handled_at = CURRENT_TIMESTAMP,
+             reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [handledBy, handledBy, id]
+    );
+    return result;
+};
+
+const markRejected = async (id, reason, handledBy) => {
+    const [result] = await pool.query(
+        `UPDATE ${TABLE} SET status = 'rejected',
+             reject_reason = ?,
+             handled_by = ?, handled_at = CURRENT_TIMESTAMP,
+             reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [reason, handledBy, handledBy, id]
+    );
+    return result;
+};
+
+// 兼容 review 语义：updateStatus（status / reject_reason / reviewed_by / reviewed_at）
 const updateStatus = async (id, data) => {
     const [result] = await pool.query(
-        `UPDATE ${TABLE} SET status = ?, reject_reason = ?, reviewed_by = ?, reviewed_at = NOW() WHERE id = ?`,
-        [data.status, data.reject_reason ?? null, data.reviewed_by, id]
+        `UPDATE ${TABLE} SET
+             status = ?,
+             reject_reason = ?,
+             reviewed_by = ?,
+             reviewed_at = NOW(),
+             handled_by = COALESCE(?, handled_by),
+             handled_at = COALESCE(NOW(), handled_at)
+         WHERE id = ?`,
+        [
+            data.status,
+            data.reject_reason ?? null,
+            data.reviewed_by,
+            data.reviewed_by ?? null,
+            id,
+        ]
     );
     return result;
 };
 
 module.exports = {
     create,
-    findById,
     findByUsername,
+    findById,
     findAll,
+    reset,
+    markApproved,
+    markRejected,
     updateStatus,
 };

@@ -25,15 +25,24 @@ const getProfile = async (userId) => {
     } else {
         user.subjects = null;
     }
-    // 学生附带所属班级
+    // 学生附带所属全部必修班（多选）
     if (user.role === 'student') {
         const classModel = require('../models/classModel');
-        const cls = await classModel.findClassByStudent(user.id);
-        user.classId = cls ? cls.class_id : null;
-        user.className = cls ? cls.class_name : null;
+        const classes = await classModel.findCompulsoryClassesByStudent(user.id);
+        const classIds = classes.map(c => c.class_id);
+        const classNames = classes.map(c => c.class_name);
+        user.classIds = classIds;
+        user.classNames = classNames;
+        // 兼容字段：className / class_name 多选拼接；classId 取第一个
+        user.className = classNames.length > 0 ? classNames.join('/') : null;
+        user.class_name = user.className;
+        user.classId = classIds[0] ?? null;
     } else {
         user.classId = null;
         user.className = null;
+        user.class_name = null;
+        user.classIds = [];
+        user.classNames = [];
     }
     return user;
 };

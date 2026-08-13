@@ -98,6 +98,16 @@ const updateUser = async (id, data) => {
         await userModel.clearTeacherSubjects(id);
     }
 
+    // 若传了 class_id（单值）或 classIds（多选数组），同步维护 student_classes 必修班多选
+    // 多选优先用 classIds 数组；兼容旧前端只传 class_id 单值
+    const hasClassIds = Array.isArray(data.classIds);
+    const hasSingleClass = data.class_id !== undefined;
+    if ((hasClassIds || hasSingleClass) && targetRole === 'student') {
+        const classModel = require('../models/classModel');
+        const classIds = hasClassIds ? data.classIds : (data.class_id ? [data.class_id] : []);
+        await classModel.setCompulsoryClasses(Number(id), classIds);
+    }
+
     return userModel.update(id, data);
 };
 

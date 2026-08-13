@@ -28,8 +28,6 @@ router.get('/adaptive-overview', requireRoles('teacher', 'admin'), adaptivePract
 router.get('/learning-analysis/me', requireRoles('student'), learningAnalysisController.mine);
 router.get('/learning-analysis/overview', requireRoles('teacher', 'admin'), learningAnalysisController.overview);
 router.get('/learning-analysis/students/:userId', requireRoles('teacher', 'admin'), learningAnalysisController.student);
-router.get('/wrong-questions', requireRoles('student'), practiceController.wrongQuestions);
-router.post('/wrong-exams', requireRoles('student'), practiceController.createWrongExam);
 
 // 试卷列表
 router.get('/exams', practiceController.listExams);
@@ -43,6 +41,10 @@ router.get('/exams/:id/analytics', requireRoles('admin', 'teacher'), practiceCon
 // 单题详情：某试卷某道题每个学生的作答情况
 router.get('/exams/:id/questions/:questionId/details', requireRoles('admin', 'teacher'), practiceController.questionDetail);
 
+// 答题草稿（本人保存 / 读取）
+router.get('/exams/:id/draft', requireRoles('student'), practiceController.getExamDraft);
+router.put('/exams/:id/draft', requireRoles('student'), practiceController.saveExamDraft);
+
 // 提交答卷（自动评分）
 router.post('/exams/:id/submit', requireRoles('student'), practiceController.submit);
 
@@ -54,6 +56,10 @@ router.get('/records/:id', practiceController.getRecord);
 
 // 统计分析（本人，总览 + 趋势 + 按题型）
 router.get('/statistics', practiceController.statistics);
+
+// 错题本（本人）
+router.get('/wrong-questions', requireRoles('student'), practiceController.wrongQuestions);
+router.post('/wrong-exams', requireRoles('student'), practiceController.wrongExam);
 
 // ==================== 管理端接口（教师/管理员）====================
 // 教师只能查看学生数据；管理员可查看所有人并按角色筛选
