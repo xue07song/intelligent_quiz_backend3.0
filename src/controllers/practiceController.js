@@ -75,6 +75,33 @@ const statistics = async (req, res, next) => {
     }
 };
 
+// 错题本列表
+const wrongQuestions = async (req, res, next) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const pageSize = parseInt(req.query.pageSize) || 20;
+        const result = await practiceService.listWrongQuestions(req.user.id, {
+            page,
+            pageSize,
+            chapter: req.query.chapter,
+            questionType: req.query.questionType,
+        });
+        res.json(paginated(result.rows, result.total, page, pageSize));
+    } catch (err) {
+        next(err);
+    }
+};
+
+// 错题重练：基于错题重新组卷
+const wrongExam = async (req, res, next) => {
+    try {
+        const result = await practiceService.createWrongExam(req.user.id, req.body);
+        res.status(201).json(success(result, `✅ 已生成错题重练试卷，共 ${result.total} 题`));
+    } catch (err) {
+        next(err);
+    }
+};
+
 // ==================== 管理端接口 ====================
 
 // 管理端：所有用户答题记录列表（可按角色筛选）
@@ -146,5 +173,6 @@ const adminGetAllStats = async (req, res, next) => {
 
 module.exports = {
     generate, listExams, getExam, submit, listRecords, getRecord, statistics,
+    wrongQuestions, wrongExam,
     adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
 };

@@ -32,13 +32,39 @@ app.use((req, res, next) => {
 
 app.use(errorHandler);
 
-app.listen(port, () => {
-    console.log(`🚀 智能题库后端服务已启动！`);
-    console.log(`📍 监听地址: http://localhost:${port}`);
-    console.log(`🔌 API 前缀: http://localhost:${port}/api/v1`);
-    console.log(`🖥️ 前端页面: http://localhost:${port}`);
-    console.log(`📋 测试接口示例: GET http://localhost:${port}/api/v1/questions`);
-    console.log(`💓 健康检查: GET http://localhost:${port}/health`);
-});
+const ensureSchema = async () => {
+    const pool = require('./config/db');
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS \`registration_requests\` (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(50) NOT NULL,
+            password VARCHAR(255) NOT NULL,
+            role ENUM('student','teacher') NOT NULL DEFAULT 'student',
+            nickname VARCHAR(50) NULL,
+            status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+            reject_reason VARCHAR(255) NULL,
+            handled_by INT NULL,
+            handled_at TIMESTAMP NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_registration_username (username)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+};
+
+ensureSchema()
+    .then(() => {
+        app.listen(port, () => {
+            console.log(`🚀 智能题库后端服务已启动！`);
+            console.log(`📍 监听地址: http://localhost:${port}`);
+            console.log(`🔌 API 前缀: http://localhost:${port}/api/v1`);
+            console.log(`🖥️ 前端页面: http://localhost:${port}`);
+            console.log(`📋 测试接口示例: GET http://localhost:${port}/api/v1/questions`);
+            console.log(`💓 健康检查: GET http://localhost:${port}/health`);
+        });
+    })
+    .catch((err) => {
+        console.error('❌ 数据库初始化失败:', err.message);
+        process.exit(1);
+    });
 
 module.exports = app;

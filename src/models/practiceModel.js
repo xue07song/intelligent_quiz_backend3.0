@@ -105,6 +105,95 @@ const findQuestionsByIds = async (ids) => {
     return rows;
 };
 
+// 错题本：统计当前用户做错的题目数
+const countWrongQuestions = async (userId, { chapter, questionType } = {}) => {
+    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    const params = [userId];
+    if (chapter !== undefined && chapter !== '' && chapter !== null) {
+        conditions.push('q.章节 = ?');
+        params.push(chapter);
+    }
+    if (questionType !== undefined && questionType !== '' && questionType !== null) {
+        conditions.push('q.题型 = ?');
+        params.push(Number(questionType));
+    }
+    const [rows] = await pool.query(
+        `SELECT COUNT(DISTINCT q.id) AS total
+         FROM \`exam_answers\` a
+         INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         INNER JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE ${conditions.join(' AND ')}`,
+        params
+    );
+    return rows[0].total;
+};
+
+// 错题本：分页列出错题
+const findWrongQuestions = async (userId, { page = 1, pageSize = 20, chapter, questionType } = {}) => {
+    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    const params = [userId];
+    if (chapter !== undefined && chapter !== '' && chapter !== null) {
+        conditions.push('q.章节 = ?');
+        params.push(chapter);
+    }
+    if (questionType !== undefined && questionType !== '' && questionType !== null) {
+        conditions.push('q.题型 = ?');
+        params.push(Number(questionType));
+    }
+    const offset = (page - 1) * pageSize;
+    const [rows] = await pool.query(
+        `SELECT q.id, q.章节 AS chapter, q.题型 AS question_type, q.题目 AS title,
+                q.选项 AS options, q.难度 AS difficulty, q.知识点 AS knowledge_point,
+                q.答案 AS correct_answer, COUNT(a.id) AS wrong_count,
+                MAX(r.submitted_at) AS last_wrong_at
+         FROM \`exam_answers\` a
+         INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         INNER JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE ${conditions.join(' AND ')}
+         GROUP BY q.id, q.章节, q.题型, q.题目, q.选项, q.难度, q.知识点, q.答案
+         ORDER BY last_wrong_at DESC
+         LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset]
+    );
+    return rows;
+};
+
+// 错题本：获取全部错题 id（用于错题重练）
+const findWrongQuestionIds = async (userId, { chapter, questionType } = {}) => {
+    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    const params = [userId];
+    if (chapter !== undefined && chapter !== '' && chapter !== null) {
+        conditions.push('q.章节 = ?');
+        params.push(chapter);
+    }
+    if (questionType !== undefined && questionType !== '' && questionType !== null) {
+        conditions.push('q.题型 = ?');
+        params.push(Number(questionType));
+    }
+    const [rows] = await pool.query(
+        `SELECT q.id
+         FROM \`exam_answers\` a
+         INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         INNER JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE ${conditions.join(' AND ')}
+         GROUP BY q.id
+         ORDER BY MAX(r.submitted_at) DESC`,
+        params
+    );
+    return rows.map((r) => r.id);
+};
+
+// 从指定 id 集合中随机抽题（错题重练）
+const randomPickByIds = async (ids, count) => {
+    if (!ids || ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(', ');
+    const [rows] = await pool.query(
+        `SELECT * FROM ${QT_TABLE} WHERE id IN (${placeholders}) ORDER BY RAND() LIMIT ?`,
+        [...ids, Number(count)]
+    );
+    return rows;
+};
+
 // 写入答题记录（事务：写 exam_records + exam_answers）
 const createRecord = async (data) => {
     const conn = await pool.getConnection();
@@ -391,6 +480,10 @@ module.exports = {
     findExamsByUser,
     findExamById,
     findQuestionsByIds,
+    countWrongQuestions,
+    findWrongQuestions,
+    findWrongQuestionIds,
+    randomPickByIds,
     createRecord,
     findRecordsByUser,
     findRecordById,
