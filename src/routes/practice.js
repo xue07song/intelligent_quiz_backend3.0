@@ -4,6 +4,7 @@ const practiceController = require('../controllers/practiceController');
 const auth = require('../middlewares/auth');
 const { requireRoles } = require('../middlewares/permission');
 const adaptivePracticeController = require('../controllers/adaptivePracticeController');
+const learningAnalysisController = require('../controllers/learningAnalysisController');
 
 // 所有练习接口均需登录
 router.use(auth);
@@ -24,6 +25,9 @@ router.get('/adaptive/sessions/:id', requireRoles('student'), adaptivePracticeCo
 router.post('/adaptive/sessions/:id/answers', requireRoles('student'), adaptivePracticeController.submit);
 router.get('/adaptive-progress', requireRoles('student'), adaptivePracticeController.progress);
 router.get('/adaptive-overview', requireRoles('teacher', 'admin'), adaptivePracticeController.overview);
+router.get('/learning-analysis/me', requireRoles('student'), learningAnalysisController.mine);
+router.get('/learning-analysis/overview', requireRoles('teacher', 'admin'), learningAnalysisController.overview);
+router.get('/learning-analysis/students/:userId', requireRoles('teacher', 'admin'), learningAnalysisController.student);
 
 // 试卷列表
 router.get('/exams', practiceController.listExams);
