@@ -130,7 +130,7 @@ const findExamsByUser = async (userId, { page = 1, pageSize = 20, subject, class
     return { rows, total };
 };
 
-const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, subject, classId, teacherSubjects } = {}) => {
+const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, subject, classId, classIds, teacherSubjects } = {}) => {
     if (userRole === 'teacher') {
         return findExamsByUser(userId, { page, pageSize, subject, classId });
     }
@@ -139,10 +139,14 @@ const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, sub
     const params = [];
     // 学生：只看所属班级的试卷 + 全班级试卷（class_id 为 NULL 表示对所有学生开放）
     if (userRole === 'student') {
-        // 需要 userId 对应的 class_id。这里在 service 层注入 classId，直接用 e.class_id 过滤
-        if (classId !== undefined && classId !== null && classId !== '') {
-            conditions.push('(e.class_id IS NULL OR e.class_id = ?)');
-            params.push(Number(classId));
+        // 多对多模式：支持 classIds 数组（必修+选修）
+        const ids = Array.isArray(classIds) && classIds.length > 0
+            ? classIds.map(Number)
+            : (classId ? [Number(classId)] : []);
+        if (ids.length > 0) {
+            const placeholders = ids.map(() => '?').join(', ');
+            conditions.push(`(e.class_id IS NULL OR e.class_id IN (${placeholders}))`);
+            params.push(...ids);
         } else {
             // 未提供学生班级时，仅看对所有班级开放的试卷
             conditions.push('e.class_id IS NULL');

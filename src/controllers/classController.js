@@ -59,13 +59,13 @@ const assignStudents = async (req, res, next) => {
         const { studentIds, studentId } = req.body;
         const ids = Array.isArray(studentIds) ? studentIds : (studentId ? [studentId] : []);
         const result = await classService.assignStudents(req.params.id, ids);
-        res.json(success(result, `✅ 已成功分班 ${result.assigned} 名学生`));
+        res.json(success(result, `✅ 已成功添加 ${result.assigned} 名学生`));
     } catch (err) {
         next(err);
     }
 };
 
-// 把学生移出班级
+// 把学生移出班级（仅移出当前班级，不影响其他班级关系）
 const removeStudents = async (req, res, next) => {
     try {
         let { studentIds } = req.body;
@@ -73,7 +73,8 @@ const removeStudents = async (req, res, next) => {
         if (!studentIds && req.params.studentId) {
             studentIds = [Number(req.params.studentId)];
         }
-        const result = await classService.removeStudents(studentIds);
+        const classId = Number(req.params.id);
+        const result = await classService.removeStudents(classId, studentIds);
         res.json(success(result, `✅ 已移出 ${result.removed} 名学生`));
     } catch (err) {
         next(err);
@@ -87,7 +88,10 @@ const transfer = async (req, res, next) => {
         if (!toClassId) { next(new Error('缺少目标班级')); return; }
         const ids = Array.isArray(studentIds) ? studentIds : (studentId ? [studentId] : []);
         if (ids.length === 0) { next(new Error('请选择要调班的学生')); return; }
-        // assignStudentsToClass 内部会先删除旧的 student_classes，再入新班，天然支持调班语义
+        // 多对多模式：先从原班移出，再加入新班
+        if (fromClassId) {
+            await classService.removeStudents(fromClassId, ids);
+        }
         const result = await classService.assignStudents(toClassId, ids);
         res.json(success(result, `✅ 已成功调班 ${result.assigned} 名学生`));
     } catch (err) {

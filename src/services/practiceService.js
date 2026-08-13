@@ -155,11 +155,12 @@ const generateRuleExam = async (userId, options = {}, actor) => {
 
 // 获取试卷列表
 const getExams = async (userId, userRole, options) => {
-    // 学生：注入其所属班级用于过滤可见试卷
+    // 学生：注入其所属的全部班级（必修+选修）用于过滤可见试卷
     if (userRole === 'student') {
         const classModel = require('../models/classModel');
-        const cls = await classModel.findClassByStudent(userId);
-        options = { ...options, classId: cls ? cls.class_id : null };
+        const allClasses = await classModel.findAllClassesByStudent(userId);
+        const classIds = allClasses.map(c => c.class_id);
+        options = { ...options, classIds: classIds.length ? classIds : null };
     }
     return practiceModel.findExamsByScope(userId, userRole, options);
 };
@@ -178,8 +179,10 @@ const getExam = async (examId, userId, userRole = 'student') => {
     if (userRole === 'student' && exam.creator_role === 'teacher') {
         if (exam.class_id) {
             const classModel = require('../models/classModel');
-            const cls = await classModel.findClassByStudent(userId);
-            if (!cls || cls.class_id !== exam.class_id) {
+            // 多对多模式：学生可能在必修班或选修班中，只要在任意班级即可
+            const allClasses = await classModel.findAllClassesByStudent(userId);
+            const inClass = allClasses.some(c => c.class_id === exam.class_id);
+            if (!inClass) {
                 throw makeError('无权查看此试卷：不在您所在班级范围内', 403, 40301);
             }
         }
@@ -206,8 +209,10 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
     // 班级可见性校验
     if (exam.class_id) {
         const classModel = require('../models/classModel');
-        const cls = await classModel.findClassByStudent(userId);
-        if (!cls || cls.class_id !== exam.class_id) {
+        // 多对多模式：学生可能在必修班或选修班中
+        const allClasses = await classModel.findAllClassesByStudent(userId);
+        const inClass = allClasses.some(c => c.class_id === exam.class_id);
+        if (!inClass) {
             throw makeError('无权提交此试卷：不在您所在班级范围内', 403, 40301);
         }
     }

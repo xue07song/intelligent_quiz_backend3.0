@@ -19,7 +19,7 @@ const getClass = async (id, { page = 1, pageSize = 50 } = {}) => {
     const studentsResult = await classModel.findStudentsByClassId(id, { page, pageSize });
     return {
         ...cls,
-        students: studentsResult.rows, // 直接返回学生数组，符合前端期望
+        students: studentsResult.rows,
         total: studentsResult.total,
         page,
         pageSize,
@@ -51,35 +51,41 @@ const updateClass = async (id, data) => {
     return classModel.update(id, data);
 };
 
-// 删除班级（学生自动回到未分班状态）
+// 删除班级
 const deleteClass = async (id) => {
     const existing = await classModel.findById(id);
     if (!existing) throw makeError('班级不存在', 404, 40401);
     return classModel.remove(id);
 };
 
-// 把学生分入班级（支持批量，已分班则调班）
+// 把学生加入班级（支持批量，幂等：已在同班跳过，不影响其他班级关系）
+// type 由班级的 type 字段决定
 const assignStudents = async (classId, studentIds) => {
     const cls = await classModel.findById(classId);
     if (!cls) throw makeError('班级不存在', 404, 40401);
     if (!Array.isArray(studentIds) || studentIds.length === 0) {
-        throw makeError('请选择要分班的学生', 400, 40001);
+        throw makeError('请选择要添加的学生', 400, 40001);
     }
-    return classModel.assignStudentsToClass(classId, studentIds);
+    // 按班级 type 写入对应关系类型
+    const type = cls.type === 'elective' ? 'elective' : 'compulsory';
+    return classModel.assignStudentsToClass(classId, studentIds, type);
 };
 
-// 把学生移出班级
-const removeStudents = async (studentIds) => {
+// 把学生从指定班级移出（不影响其他班级关系）
+const removeStudents = async (classId, studentIds) => {
     if (!Array.isArray(studentIds) || studentIds.length === 0) {
         throw makeError('请选择要移出的学生', 400, 40001);
     }
-    return classModel.removeStudentsFromClass(studentIds);
+    return classModel.removeStudentsFromClass(classId, studentIds);
 };
 
-// 未分班学生列表
-const listUnassignedStudents = async ({ page = 1, pageSize = 50, keyword } = {}) => {
-    return classModel.findUnassignedStudents({ page, pageSize, keyword });
+// 可添加学生列表（返回所有学生 + 已加入班级列表）
+const listAvailableStudents = async ({ page = 1, pageSize = 50, keyword } = {}) => {
+    return classModel.findAvailableStudents({ page, pageSize, keyword });
 };
+
+// 兼容旧接口名
+const listUnassignedStudents = listAvailableStudents;
 
 module.exports = {
     listClasses,
@@ -89,5 +95,6 @@ module.exports = {
     deleteClass,
     assignStudents,
     removeStudents,
+    listAvailableStudents,
     listUnassignedStudents,
 };
