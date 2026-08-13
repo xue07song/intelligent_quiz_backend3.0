@@ -44,7 +44,7 @@ const listExams = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const pageSize = parseInt(req.query.pageSize) || 20;
-        const result = await practiceService.getExams(req.user.id, { page, pageSize });
+        const result = await practiceService.getExams(req.user.id, req.user.role, { page, pageSize });
         res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) {
         next(err);
@@ -54,7 +54,7 @@ const listExams = async (req, res, next) => {
 // 试卷详情
 const getExam = async (req, res, next) => {
     try {
-        const exam = await practiceService.getExam(req.params.id, req.user.id);
+        const exam = await practiceService.getExam(req.params.id, req.user.id, req.user.role);
         res.json(success(exam));
     } catch (err) {
         next(err);
@@ -64,7 +64,7 @@ const getExam = async (req, res, next) => {
 // 提交答卷
 const submit = async (req, res, next) => {
     try {
-        const result = await practiceService.submitExam(req.user.id, req.params.id, req.body);
+        const result = await practiceService.submitExam(req.user.id, req.user.role, req.params.id, req.body);
         res.status(201).json(success(result, `✅ 提交成功！准确率 ${result.accuracy}%，得分 ${result.score}`));
     } catch (err) {
         next(err);

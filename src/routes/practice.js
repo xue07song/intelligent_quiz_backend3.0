@@ -3,18 +3,27 @@ const router = express.Router();
 const practiceController = require('../controllers/practiceController');
 const auth = require('../middlewares/auth');
 const { requireRoles } = require('../middlewares/permission');
+const adaptivePracticeController = require('../controllers/adaptivePracticeController');
 
 // 所有练习接口均需登录
 router.use(auth);
 
 // ==================== 学生端接口 ====================
 // 组卷
-router.post('/exams', practiceController.generate);
+router.post('/exams', requireRoles('teacher'), practiceController.generate);
 
 // 题库库存与多约束智能组卷（旧组卷接口继续保留）
-router.get('/exam-inventory', practiceController.inventory);
-router.post('/rule-exams/preview', practiceController.previewRule);
-router.post('/rule-exams', practiceController.generateRule);
+router.get('/exam-inventory', requireRoles('teacher'), practiceController.inventory);
+router.post('/rule-exams/preview', requireRoles('teacher'), practiceController.previewRule);
+router.post('/rule-exams', requireRoles('teacher'), practiceController.generateRule);
+
+// 逐题难度自适应练习
+router.post('/adaptive/inventory', requireRoles('student'), adaptivePracticeController.inventory);
+router.post('/adaptive/sessions', requireRoles('student'), adaptivePracticeController.start);
+router.get('/adaptive/sessions/:id', requireRoles('student'), adaptivePracticeController.getSession);
+router.post('/adaptive/sessions/:id/answers', requireRoles('student'), adaptivePracticeController.submit);
+router.get('/adaptive-progress', requireRoles('student'), adaptivePracticeController.progress);
+router.get('/adaptive-overview', requireRoles('teacher', 'admin'), adaptivePracticeController.overview);
 
 // 试卷列表
 router.get('/exams', practiceController.listExams);
@@ -23,7 +32,7 @@ router.get('/exams', practiceController.listExams);
 router.get('/exams/:id', practiceController.getExam);
 
 // 提交答卷（自动评分）
-router.post('/exams/:id/submit', practiceController.submit);
+router.post('/exams/:id/submit', requireRoles('student'), practiceController.submit);
 
 // 答题记录列表（本人）
 router.get('/records', practiceController.listRecords);
