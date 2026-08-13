@@ -839,6 +839,23 @@ const getQuestionStudentDetail = async (examId, questionId) => {
     return { question, answers, summary };
 };
 
+// AI 助手：查询用户最近 N 天错题明细
+const findRecentWrongAnswers = async (userId, { days = 30, limit = 50 } = {}) => {
+    const [rows] = await pool.query(
+        `SELECT q.题目 AS title, q.知识点 AS knowledge_point, q.难度 AS difficulty,
+                a.user_answer AS user_answer, a.correct_answer AS correct_answer
+         FROM \`exam_answers\` a
+         INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE r.user_id = ? AND a.is_correct = 0
+           AND r.submitted_at >= NOW() - INTERVAL ? DAY
+         ORDER BY r.submitted_at DESC
+         LIMIT ?`,
+        [userId, Number(days), Number(limit)]
+    );
+    return rows;
+};
+
 module.exports = {
     randomPick,
     findRuleExamCandidates,
@@ -864,6 +881,7 @@ module.exports = {
     findUserById,
     getExamAnalytics,
     getQuestionStudentDetail,
+    findRecentWrongAnswers,
     OBJECTIVE_TYPES,
     ensureReviewColumns,
     reviewAnswer,
