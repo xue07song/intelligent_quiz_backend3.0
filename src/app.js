@@ -4,6 +4,7 @@ const path = require('path');
 const routes = require('./routes');
 const studentRoutes = require('./routes/student');
 const errorHandler = require('./middlewares/errorHandler');
+const { ensureCompatibleSchema } = require('./config/schemaCompatibility');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -32,13 +33,24 @@ app.use((req, res, next) => {
 
 app.use(errorHandler);
 
-app.listen(port, () => {
+const start = async () => {
+    await ensureCompatibleSchema();
+    return app.listen(port, () => {
     console.log(`🚀 智能题库后端服务已启动！`);
     console.log(`📍 监听地址: http://localhost:${port}`);
     console.log(`🔌 API 前缀: http://localhost:${port}/api/v1`);
     console.log(`🖥️ 前端页面: http://localhost:${port}`);
     console.log(`📋 测试接口示例: GET http://localhost:${port}/api/v1/questions`);
     console.log(`💓 健康检查: GET http://localhost:${port}/health`);
-});
+    });
+};
+
+if (require.main === module) {
+    start().catch((err) => {
+        console.error('数据库兼容初始化失败:', err.message);
+        process.exitCode = 1;
+    });
+}
 
 module.exports = app;
+module.exports.start = start;

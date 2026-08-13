@@ -565,6 +565,26 @@ const getQuestionDetail = async (caller, examId, questionId) => {
     return result;
 };
 
+const getWrongQuestions = async (userId, options = {}) => {
+    return practiceModel.findWrongQuestions(userId, options);
+};
+
+const createWrongExam = async (userId, options = {}) => {
+    const count = Math.min(Math.max(Number(options.count) || 20, 1), 100);
+    const questions = await practiceModel.findWrongQuestionPool(userId, {
+        chapter: options.chapter,
+        questionType: options.questionType,
+        count,
+    });
+    if (!questions.length) throw makeError('当前筛选条件下没有可重练的错题', 404, 40401);
+    const title = String(options.title || '').trim() || `错题重练-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
+    const created = await practiceModel.createExam({
+        userId, title, chapter: options.chapter, questionType: options.questionType,
+        difficulty: null, questions, subject: null, classId: null,
+    });
+    return { ...created, title, total: questions.length, availableCount: questions.length, truncated: questions.length < count };
+};
+
 module.exports = {
     generateExam,
     getExamInventory,
@@ -585,4 +605,6 @@ module.exports = {
     adminGetAllStatsByUser,
     getExamAnalytics,
     getQuestionDetail,
+    getWrongQuestions,
+    createWrongExam,
 };

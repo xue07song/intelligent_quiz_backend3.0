@@ -682,6 +682,54 @@ const getQuestionStudentDetail = async (examId, questionId) => {
     return { question, answers, summary };
 };
 
+const findWrongQuestions = async (userId, { page = 1, pageSize = 20, chapter, questionType } = {}) => {
+    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    const params = [userId];
+    if (chapter) { conditions.push('q.章节 = ?'); params.push(Number(chapter)); }
+    if (questionType) { conditions.push('q.题型 = ?'); params.push(Number(questionType)); }
+    const where = conditions.join(' AND ');
+    const [countRows] = await pool.query(
+        `SELECT COUNT(DISTINCT a.question_id) total
+         FROM exam_answers a INNER JOIN exam_records r ON r.id=a.record_id
+         LEFT JOIN ${QT_TABLE} q ON a.question_id=CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE ${where}`,
+        params
+    );
+    const offset = (Number(page) - 1) * Number(pageSize);
+    const [rows] = await pool.query(
+        `SELECT a.question_id id, MAX(q.题目) title, MAX(q.题型) question_type,
+                MAX(q.难度) difficulty, MAX(q.章节) chapter, MAX(q.知识点) knowledge_point,
+                COUNT(*) wrong_count, MAX(r.submitted_at) last_wrong_at
+         FROM exam_answers a INNER JOIN exam_records r ON r.id=a.record_id
+         LEFT JOIN ${QT_TABLE} q ON a.question_id=CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE ${where}
+         GROUP BY a.question_id ORDER BY last_wrong_at DESC LIMIT ? OFFSET ?`,
+        [...params, Number(pageSize), offset]
+    );
+    return { rows, total: Number(countRows[0].total) };
+};
+
+const findWrongQuestionPool = async (userId, { chapter, questionType, count = 20 } = {}) => {
+    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    const params = [userId];
+    if (chapter) { conditions.push('q.章节 = ?'); params.push(Number(chapter)); }
+    if (questionType) { conditions.push('q.题型 = ?'); params.push(Number(questionType)); }
+    const [rows] = await pool.query(
+        `SELECT q.* FROM ${QT_TABLE} q
+         INNER JOIN (SELECT DISTINCT a.question_id FROM exam_answers a
+                     INNER JOIN exam_records r ON r.id=a.record_id
+                     WHERE r.user_id=? AND a.is_correct=0) w
+           ON w.question_id=CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         ${chapter || questionType ? `WHERE ${[
+            chapter ? 'q.章节 = ?' : null,
+            questionType ? 'q.题型 = ?' : null,
+         ].filter(Boolean).join(' AND ')}` : ''}
+         ORDER BY RAND() LIMIT ?`,
+        [userId, ...(chapter ? [Number(chapter)] : []), ...(questionType ? [Number(questionType)] : []), Number(count)]
+    );
+    return rows;
+};
+
 module.exports = {
     randomPick,
     findRuleExamCandidates,
@@ -703,6 +751,8 @@ module.exports = {
     findUserById,
     getExamAnalytics,
     getQuestionStudentDetail,
+    findWrongQuestions,
+    findWrongQuestionPool,
     OBJECTIVE_TYPES,
     ensureReviewColumns,
     reviewAnswer,

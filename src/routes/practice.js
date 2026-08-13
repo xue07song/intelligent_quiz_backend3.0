@@ -28,6 +28,8 @@ router.get('/adaptive-overview', requireRoles('teacher', 'admin'), adaptivePract
 router.get('/learning-analysis/me', requireRoles('student'), learningAnalysisController.mine);
 router.get('/learning-analysis/overview', requireRoles('teacher', 'admin'), learningAnalysisController.overview);
 router.get('/learning-analysis/students/:userId', requireRoles('teacher', 'admin'), learningAnalysisController.student);
+router.get('/wrong-questions', requireRoles('student'), practiceController.wrongQuestions);
+router.post('/wrong-exams', requireRoles('student'), practiceController.createWrongExam);
 
 // 试卷列表
 router.get('/exams', practiceController.listExams);

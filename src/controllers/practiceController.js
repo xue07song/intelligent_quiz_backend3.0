@@ -207,8 +207,25 @@ const questionDetail = async (req, res, next) => {
     }
 };
 
+const wrongQuestions = async (req, res, next) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const pageSize = parseInt(req.query.pageSize) || 20;
+        const result = await practiceService.getWrongQuestions(req.user.id, {
+            page, pageSize, chapter: req.query.chapter, questionType: req.query.questionType,
+        });
+        res.json(paginated(result.rows, result.total, page, pageSize));
+    } catch (err) { next(err); }
+};
+
+const createWrongExam = async (req, res, next) => {
+    try {
+        res.status(201).json(success(await practiceService.createWrongExam(req.user.id, req.body), '错题练习已生成'));
+    } catch (err) { next(err); }
+};
+
 module.exports = {
     generate, inventory, previewRule, generateRule, listExams, getExam, submit, listRecords, getRecord, statistics,
     adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
-    reviewSubjectiveAnswer, examAnalytics, questionDetail,
+    reviewSubjectiveAnswer, examAnalytics, questionDetail, wrongQuestions, createWrongExam,
 };
