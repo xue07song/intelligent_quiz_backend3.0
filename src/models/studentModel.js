@@ -4,7 +4,13 @@ const QT_TABLE = '`题库1`';
 
 const findProfile = async (userId) => {
     const [rows] = await pool.query(
-        'SELECT id, username, nickname, role, created_at, email, phone, school, college FROM `users` WHERE id = ?',
+        `SELECT u.id, u.username, u.nickname, u.role, u.created_at, u.email, u.phone, u.school, u.college,
+                u.student_no, u.employee_no, u.major, u.grade, u.title,
+                c.id AS class_id, c.name AS class_name, c.college AS class_college, c.major AS class_major, c.grade AS class_grade
+         FROM \`users\` u
+         LEFT JOIN student_classes sc ON sc.student_id = u.id
+         LEFT JOIN classes c ON c.id = sc.class_id
+         WHERE u.id = ?`,
         [userId]
     );
     return rows[0] || null;

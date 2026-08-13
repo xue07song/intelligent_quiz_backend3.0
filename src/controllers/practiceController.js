@@ -1,22 +1,59 @@
 const practiceService = require('../services/practiceService');
 const { success, paginated } = require('../utils/response');
 
+// 统一构造操作者上下文（供 service 做科目权限过滤）
+const buildActor = (req) => ({ id: req.user.id, role: req.user.role });
+
 // 随机组卷
 const generate = async (req, res, next) => {
     try {
-        const result = await practiceService.generateExam(req.user.id, req.body);
+        const result = await practiceService.generateExam(req.user.id, req.body, buildActor(req));
         res.status(201).json(success(result, '✅ 组卷成功'));
     } catch (err) {
         next(err);
     }
 };
 
-// 试卷列表
+const inventory = async (req, res, next) => {
+    try {
+        const chapters = String(req.query.chapters || '').split(',').filter(Boolean).map(Number);
+        const subject = req.query.subject || '';
+        const result = await practiceService.getExamInventory({ chapters, subject }, buildActor(req));
+        res.json(success(result));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const previewRule = async (req, res, next) => {
+    try {
+        const result = await practiceService.previewRuleExam(req.body, buildActor(req));
+        res.json(success(result));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const generateRule = async (req, res, next) => {
+    try {
+        const result = await practiceService.generateRuleExam(req.user.id, req.body, buildActor(req));
+        res.status(201).json(success(result, '✅ 智能组卷成功'));
+    } catch (err) {
+        next(err);
+    }
+};
+
+// 试卷列表（教师按 subject/classId 过滤自己的卷子；学生自动只看本班级+全开放卷子）
 const listExams = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const pageSize = parseInt(req.query.pageSize) || 20;
-        const result = await practiceService.getExams(req.user.id, { page, pageSize });
+        const result = await practiceService.getExams(req.user.id, req.user.role, {
+            page,
+            pageSize,
+            subject: req.query.subject || '',
+            classId: req.query.classId || '',
+        });
         res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) {
         next(err);
@@ -26,7 +63,7 @@ const listExams = async (req, res, next) => {
 // 试卷详情
 const getExam = async (req, res, next) => {
     try {
-        const exam = await practiceService.getExam(req.params.id, req.user.id);
+        const exam = await practiceService.getExam(req.params.id, req.user.id, req.user.role);
         res.json(success(exam));
     } catch (err) {
         next(err);
@@ -36,7 +73,7 @@ const getExam = async (req, res, next) => {
 // 提交答卷
 const submit = async (req, res, next) => {
     try {
-        const result = await practiceService.submitExam(req.user.id, req.params.id, req.body);
+        const result = await practiceService.submitExam(req.user.id, req.user.role, req.params.id, req.body);
         res.status(201).json(success(result, `✅ 提交成功！准确率 ${result.accuracy}%，得分 ${result.score}`));
     } catch (err) {
         next(err);
@@ -160,6 +197,12 @@ const adminGetRecord = async (req, res, next) => {
     }
 };
 
+const reviewSubjectiveAnswer = async (req, res, next) => {
+    try {
+        res.json(success(await practiceService.reviewSubjectiveAnswer(req.user.id, req.params.answerId, req.body), '复核结果已保存'));
+    } catch (err) { next(err); }
+};
+
 // 管理端：以人为界的全局统计总览（每人含汇总 + 最近 N 次答题明细）
 const adminGetAllStats = async (req, res, next) => {
     try {
@@ -171,8 +214,33 @@ const adminGetAllStats = async (req, res, next) => {
     }
 };
 
+// 试卷维度分析（每题正确率 + 学生成绩 + 整体统计 + 班级对比 + 分数段）
+const examAnalytics = async (req, res, next) => {
+    try {
+        const result = await practiceService.getExamAnalytics(req.user, req.params.id);
+        res.json(success(result));
+    } catch (err) {
+        next(err);
+    }
+};
+
+// 单题详情：某试卷某道题每个学生的作答情况
+const questionDetail = async (req, res, next) => {
+    try {
+        const result = await practiceService.getQuestionDetail(req.user, req.params.id, req.params.questionId);
+        res.json(success(result));
+    } catch (err) {
+        next(err);
+    }
+};
+
 module.exports = {
+
     generate, listExams, getExam, submit, listRecords, getRecord, statistics,
     wrongQuestions, wrongExam,
+=======
+    generate, inventory, previewRule, generateRule, listExams, getExam, submit, listRecords, getRecord, statistics,
+
     adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
+    reviewSubjectiveAnswer, examAnalytics, questionDetail,
 };

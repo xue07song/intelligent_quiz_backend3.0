@@ -36,6 +36,12 @@ const login = async ({ username, password }) => {
 
     const token = sign({ id: user.id, username: user.username, role: user.role });
 
+    // 教师登录时附带所教科目，供前端首页按科目展示题库
+    let subjects = null;
+    if (user.role === 'teacher') {
+        subjects = await userModel.getTeacherSubjects(user.id);
+    }
+
     return {
         token,
         user: {
@@ -43,6 +49,16 @@ const login = async ({ username, password }) => {
             username: user.username,
             role: user.role,
             nickname: user.nickname,
+            email: user.email,
+            phone: user.phone,
+            school: user.school,
+            college: user.college,
+            student_no: user.student_no,
+            employee_no: user.employee_no,
+            major: user.major,
+            grade: user.grade,
+            title: user.title,
+            subjects,
         },
     };
 };
@@ -54,6 +70,12 @@ const getProfile = async (userId) => {
         error.statusCode = 404;
         error.errorCode = 40402;
         throw error;
+    }
+    // 教师附带所教科目
+    if (user.role === 'teacher') {
+        user.subjects = await userModel.getTeacherSubjects(user.id);
+    } else {
+        user.subjects = null;
     }
     return user;
 };

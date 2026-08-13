@@ -4,13 +4,13 @@ const TABLE = '`题库1`';
 
 const create = async (data) => {
     const [result] = await pool.query(
-        `INSERT INTO ${TABLE} (id, 章节, 题型, 序号, 题目, 选项, 答案, 解析, 难度, 知识点, 使用频度, 出题人) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [data.id, data.章节, data.题型, data.序号, data.题目, data.选项, data.答案, data.解析, data.难度, data.知识点, data.使用频度, data.出题人]
+        `INSERT INTO ${TABLE} (id, 章节, 题型, 序号, 题目, 选项, 答案, 解析, 难度, 知识点, 使用频度, 出题人, 科目) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [data.id, data.章节, data.题型, data.序号, data.题目, data.选项, data.答案, data.解析, data.难度, data.知识点, data.使用频度, data.出题人, data.科目 ?? null]
     );
     return result;
 };
 
-const findAll = async ({ page = 1, pageSize = 20, id, 章节, 题型, 难度, 关键词, 出题人 } = {}) => {
+const findAll = async ({ page = 1, pageSize = 20, id, 章节, 题型, 难度, 关键词, 出题人, 科目 } = {}) => {
     const conditions = [];
     const params = [];
 
@@ -38,6 +38,22 @@ const findAll = async ({ page = 1, pageSize = 20, id, 章节, 题型, 难度, �
     if (出题人 !== undefined && 出题人 !== '' && 出题人 !== null) {
         conditions.push('出题人 LIKE ?');
         params.push(`%${出题人}%`);
+    }
+    // 科目过滤：支持单个字符串（= ）或数组（IN）。空数组表示无匹配。
+    if (科目 !== undefined && 科目 !== null) {
+        if (Array.isArray(科目)) {
+            if (科目.length === 0) {
+                // 无权限科目，强制返回空集
+                conditions.push('1 = 0');
+            } else {
+                const placeholders = 科目.map(() => '?').join(', ');
+                conditions.push(`科目 IN (${placeholders})`);
+                params.push(...科目);
+            }
+        } else if (String(科目).trim() !== '') {
+            conditions.push('科目 = ?');
+            params.push(String(科目).trim());
+        }
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -73,11 +89,22 @@ const findExistingIds = async (ids) => {
     return rows.map((r) => r.id);
 };
 
+// 批量查询 id 与科目（用于批量删除前的权限校验）
+const findSubjectsByIds = async (ids) => {
+    if (!ids || ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(', ');
+    const [rows] = await pool.query(
+        `SELECT id, 科目 FROM ${TABLE} WHERE id IN (${placeholders})`,
+        ids
+    );
+    return rows;
+};
+
 const update = async (id, data) => {
     const fields = [];
     const params = [];
 
-    const allowedFields = ['章节', '题型', '序号', '题目', '选项', '答案', '解析', '难度', '知识点', '使用频度', '出题人'];
+    const allowedFields = ['章节', '题型', '序号', '题目', '选项', '答案', '解析', '难度', '知识点', '使用频度', '出题人', '科目'];
     for (const field of allowedFields) {
         if (data[field] !== undefined) {
             fields.push(`${field} = ?`);
@@ -108,19 +135,19 @@ const batchCreate = async (items) => {
     try {
         await conn.beginTransaction();
 
-        const placeholder = '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+        const placeholder = '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
         const placeholders = items.map(() => placeholder).join(', ');
         const values = [];
         for (const data of items) {
             values.push(
                 data.id, data.章节, data.题型, data.序号, data.题目, data.选项,
-                data.答案, data.解析, data.难度, data.知识点, data.使用频度, data.出题人
+                data.答案, data.解析, data.难度, data.知识点, data.使用频度, data.出题人, data.科目 ?? null
             );
         }
 
         // INSERT IGNORE：遇到重复 id 自动跳过而非报错
         const [result] = await conn.query(
-            `INSERT IGNORE INTO ${TABLE} (id, 章节, 题型, 序号, 题目, 选项, 答案, 解析, 难度, 知识点, 使用频度, 出题人) VALUES ${placeholders}`,
+            `INSERT IGNORE INTO ${TABLE} (id, 章节, 题型, 序号, 题目, 选项, 答案, 解析, 难度, 知识点, 使用频度, 出题人, 科目) VALUES ${placeholders}`,
             values
         );
 
@@ -158,6 +185,9 @@ const statistics = async () => {
     const [creatorStats] = await pool.query(
         `SELECT 出题人, COUNT(*) AS count FROM ${TABLE} WHERE 出题人 IS NOT NULL AND 出题人 != '' GROUP BY 出题人 ORDER BY count DESC LIMIT 10`
     );
+    const [subjectStats] = await pool.query(
+        `SELECT 科目 AS subject, COUNT(*) AS count FROM ${TABLE} WHERE 科目 IS NOT NULL AND 科目 != '' GROUP BY 科目 ORDER BY 科目`
+    );
     const [totalResult] = await pool.query(`SELECT COUNT(*) AS total FROM ${TABLE}`);
     const total = totalResult[0].total;
 
@@ -167,6 +197,7 @@ const statistics = async () => {
         byType: typeStats,
         byDifficulty: difficultyStats,
         byCreator: creatorStats,
+        bySubject: subjectStats,
     };
 };
 
@@ -191,6 +222,7 @@ module.exports = {
     findAll,
     findById,
     findExistingIds,
+    findSubjectsByIds,
     update,
     remove,
     batchCreate,
