@@ -161,6 +161,12 @@ const adminGetRecord = async (req, res, next) => {
     }
 };
 
+const reviewSubjectiveAnswer = async (req, res, next) => {
+    try {
+        res.json(success(await practiceService.reviewSubjectiveAnswer(req.user.id, req.params.answerId, req.body), '复核结果已保存'));
+    } catch (err) { next(err); }
+};
+
 // 管理端：以人为界的全局统计总览（每人含汇总 + 最近 N 次答题明细）
 const adminGetAllStats = async (req, res, next) => {
     try {
@@ -174,5 +180,5 @@ const adminGetAllStats = async (req, res, next) => {
 
 module.exports = {
     generate, inventory, previewRule, generateRule, listExams, getExam, submit, listRecords, getRecord, statistics,
-    adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
+    adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats, reviewSubjectiveAnswer,
 };

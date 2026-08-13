@@ -58,6 +58,7 @@ router.get('/admin/records', requireRoles('admin', 'teacher'), practiceControlle
 
 // 查看任意答题记录详情
 router.get('/admin/records/:id', requireRoles('admin', 'teacher'), practiceController.adminGetRecord);
+router.put('/admin/answers/:answerId/review', requireRoles('teacher'), practiceController.reviewSubjectiveAnswer);
 
 // 查看指定用户的答题记录列表
 router.get('/admin/users/:userId/records', requireRoles('admin', 'teacher'), practiceController.adminListUserRecords);
