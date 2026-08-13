@@ -1,7 +1,7 @@
 const pool = require('../config/db');
 
 const QT_TABLE = '`题库1`';
-const OBJECTIVE_TYPES = [1, 2, 3, 4];
+const OBJECTIVE_TYPES = [1, 2, 3, 4, 5, 6];
 
 const normalizeDifficultySql = `CASE
     WHEN q.难度 REGEXP '^[1-5]$' THEN CAST(q.难度 AS UNSIGNED)
@@ -173,7 +173,14 @@ const findNextQuestion = async (session) => {
         questionTypes: String(session.question_types).split(',').map(Number),
         knowledgeKeyword: session.knowledge_keyword || '',
     };
+    const selectedTypes = base.questionTypes;
+    const preferredType = selectedTypes[Number(session.answered_count) % selectedTypes.length];
     const attempts = [
+        { ...base, questionTypes: [preferredType], difficulty: session.current_difficulty, fallback: '' },
+        ...[1, 2, 3, 4].flatMap((distance) => [session.current_difficulty - distance, session.current_difficulty + distance])
+            .filter((value) => value >= 1 && value <= 5)
+            .map((difficulty) => ({ ...base, questionTypes: [preferredType], difficulty,
+                fallback: `当前题型没有未做过的 ${session.current_difficulty} 级题，暂时使用 ${difficulty} 级同题型题目。` })),
         { ...base, difficulty: session.current_difficulty, fallback: '' },
         ...[1, 2, 3, 4].flatMap((distance) => [session.current_difficulty - distance, session.current_difficulty + distance])
             .filter((value) => value >= 1 && value <= 5)

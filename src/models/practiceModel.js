@@ -232,6 +232,44 @@ const createRecord = async (data) => {
     }
 };
 
+const ensureReviewColumns = async () => {
+    const columns = [
+        ['review_status', "VARCHAR(20) DEFAULT NULL"],
+        ['review_score_rate', "DECIMAL(5,2) DEFAULT NULL"],
+        ['review_comment', "VARCHAR(500) DEFAULT NULL"],
+        ['reviewed_by', "INT DEFAULT NULL"],
+        ['reviewed_at', "DATETIME DEFAULT NULL"],
+    ];
+    const [existing] = await pool.query("SHOW COLUMNS FROM `exam_answers`");
+    const names = new Set(existing.map((item) => item.Field));
+    for (const [name, definition] of columns) {
+        if (!names.has(name)) await pool.query(`ALTER TABLE \`exam_answers\` ADD COLUMN \`${name}\` ${definition}`);
+    }
+};
+
+const reviewAnswer = async ({ answerId, reviewerId, status, scoreRate, comment }) => {
+    await ensureReviewColumns();
+    const [answerRows] = await pool.query('SELECT id, record_id, question_type FROM `exam_answers` WHERE id=?', [answerId]);
+    if (!answerRows.length) return null;
+    const answer = answerRows[0];
+    if (![4, 5, 6].includes(Number(answer.question_type))) return null;
+    const isCorrect = status === 'correct' ? 1 : status === 'incorrect' ? 0 : 3;
+    await pool.query(`UPDATE exam_answers SET is_correct=?, review_status=?, review_score_rate=?, review_comment=?,
+        reviewed_by=?, reviewed_at=NOW() WHERE id=?`, [isCorrect, status, scoreRate, comment || null, reviewerId, answerId]);
+    const [statsRows] = await pool.query(`SELECT COUNT(*) total,
+        SUM(CASE WHEN is_correct=2 THEN 1 ELSE 0 END) skipped,
+        SUM(CASE WHEN is_correct=1 THEN 1 ELSE 0 END) correct,
+        SUM(CASE WHEN is_correct=0 THEN 1 ELSE 0 END) wrong,
+        SUM(CASE WHEN is_correct NOT IN (2,3) OR review_status='partial' THEN 1 ELSE 0 END) evaluated,
+        SUM(CASE WHEN is_correct=1 THEN 1 WHEN review_status='partial' THEN COALESCE(review_score_rate,0) ELSE 0 END) earned
+        FROM exam_answers WHERE record_id=?`, [answer.record_id]);
+    const stats = statsRows[0];
+    const accuracy = Number(stats.evaluated) ? Math.round(Number(stats.earned) * 10000 / Number(stats.evaluated)) / 100 : 0;
+    await pool.query(`UPDATE exam_records SET correct_count=?, wrong_count=?, skipped_count=?, accuracy=?, score=? WHERE id=?`,
+        [Number(stats.correct), Number(stats.wrong), Number(stats.skipped), accuracy, accuracy, answer.record_id]);
+    return { answerId: Number(answerId), recordId: answer.record_id, status, scoreRate, comment: comment || '', accuracy };
+};
+
 // 查询用户答题记录列表（含提交人信息）
 const findRecordsByUser = async (userId, { page = 1, pageSize = 20 } = {}) => {
     const offset = (page - 1) * pageSize;
@@ -666,4 +704,6 @@ module.exports = {
     getExamAnalytics,
     getQuestionStudentDetail,
     OBJECTIVE_TYPES,
+    ensureReviewColumns,
+    reviewAnswer,
 };

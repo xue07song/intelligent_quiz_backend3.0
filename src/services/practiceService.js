@@ -1,6 +1,7 @@
 const practiceModel = require('../models/practiceModel');
 const { OBJECTIVE_TYPES } = practiceModel;
 const { buildInventory, analyzeRuleExamConfiguration, assembleRuleExam } = require('../algorithms/examRuleEngine');
+const subjectiveEvaluation = require('./subjectiveEvaluationService');
 const { isValidSubject } = require('../config/subjects');
 
 const makeError = (message, statusCode, errorCode) => {
@@ -249,9 +250,9 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
     });
 
     // 遍历试卷所有题目判分
-    exam.questions.forEach((q) => {
+    for (const q of exam.questions) {
         const qType = Number(q.题型);
-        const isObjective = OBJECTIVE_TYPES.includes(qType);
+        const isObjective = [1, 2, 3].includes(qType);
         const userAnswer = userAnswerMap.get(String(q.id));
 
         if (isObjective) objectiveTotal++;
@@ -270,8 +271,14 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
                     wrongCount++;
                 }
             } else {
-                // 非客观题：标记为不判分，不计入错误数
-                isCorrect = 3;
+                const evaluation = await subjectiveEvaluation.evaluate({
+                    questionType: qType, question: q.题目, userAnswer: String(userAnswer).trim(),
+                    referenceAnswer: q.答案 || '', explanation: q.解析 || '',
+                });
+                isCorrect = evaluation.status === 'correct' ? 1 : evaluation.status === 'incorrect' ? 0 : 3;
+                q.evaluation = evaluation;
+                if (evaluation.status === 'correct') correctCount++;
+                else if (evaluation.status === 'incorrect') wrongCount++;
             }
         } else {
             skippedCount++;
@@ -284,12 +291,15 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
             correctAnswer: q.答案 || '',
             isObjective: isObjective ? 1 : 0,
             isCorrect,
+            evaluation: q.evaluation || null,
         });
-    });
+    }
 
-    // 计算准确率和得分（基于客观题）
-    const accuracy = objectiveTotal > 0
-        ? Math.round((objectiveCorrect / objectiveTotal) * 10000) / 100
+    // 待复核题不计入分母，部分正确按得分比例计入。
+    const evaluatedPoints = answerRecords.reduce((sum, item) => sum + (item.isCorrect === 2 || item.evaluation?.reviewRequired ? 0 : 1), 0);
+    const earnedPoints = answerRecords.reduce((sum, item) => sum + (item.isCorrect === 1 ? 1 : Number(item.evaluation?.scoreRate || 0)), 0);
+    const accuracy = evaluatedPoints > 0
+        ? Math.round((earnedPoints / evaluatedPoints) * 10000) / 100
         : 0;
     const score = accuracy; // 百分制
 
@@ -327,6 +337,15 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
 
 // 客观题判分逻辑
 const checkAnswer = (type, userAnswer, correctAnswer) => {
+    if (type === 1) {
+        const booleanValue = (value) => {
+            const text = String(value).trim().toLowerCase();
+            if (['t', 'true', '正确', '对', '是', '√', '1'].includes(text)) return 'T';
+            if (['f', 'false', '错误', '错', '否', '×', '0'].includes(text)) return 'F';
+            return text.toUpperCase();
+        };
+        return booleanValue(userAnswer) === booleanValue(correctAnswer);
+    }
     if (type === 3) {
         // 多选题：排序后比较（如 "BCA" vs "ABC" 视为相同）
         const normalize = (s) => s.toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
@@ -433,6 +452,18 @@ const adminGetRecord = async (callerRole, recordId) => {
         }
     }
     return record;
+};
+
+const reviewSubjectiveAnswer = async (reviewerId, answerId, body = {}) => {
+    const allowed = ['correct', 'partial', 'incorrect'];
+    const status = String(body.status || '');
+    if (!allowed.includes(status)) throw Object.assign(new Error('请选择有效的复核结果'), { statusCode: 400 });
+    const fullScore = Math.max(0.01, Number(body.fullScore) || 1);
+    const awardedScore = status === 'correct' ? fullScore : status === 'incorrect' ? 0 : Math.max(0, Math.min(fullScore, Number(body.awardedScore) || 0));
+    const scoreRate = awardedScore / fullScore;
+    const result = await practiceModel.reviewAnswer({ answerId, reviewerId, status, scoreRate, comment: String(body.comment || '').trim().slice(0, 500) });
+    if (!result) throw Object.assign(new Error('该答案不存在或不支持复核'), { statusCode: 404 });
+    return result;
 };
 
 // 管理端：以人为界的全局统计总览
@@ -550,6 +581,7 @@ module.exports = {
     adminListUserRecords,
     adminGetUserStats,
     adminGetRecord,
+    reviewSubjectiveAnswer,
     adminGetAllStatsByUser,
     getExamAnalytics,
     getQuestionDetail,

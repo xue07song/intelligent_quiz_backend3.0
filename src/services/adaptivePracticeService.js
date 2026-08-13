@@ -1,5 +1,6 @@
 const model = require('../models/adaptivePracticeModel');
 const { difficultyGroup, evaluateDifficulty } = require('../algorithms/difficultyAdjustment');
+const subjectiveEvaluation = require('./subjectiveEvaluationService');
 
 const normalizeOptions = (raw = {}) => {
     const chapters = [...new Set((Array.isArray(raw.chapters) ? raw.chapters : []).map(Number)
@@ -77,6 +78,15 @@ const start = async (userId, raw) => {
 };
 
 const checkAnswer = (type, userAnswer, correctAnswer) => {
+    if (Number(type) === 1) {
+        const booleanValue = (value) => {
+            const text = String(value).trim().toLowerCase();
+            if (['t', 'true', '正确', '对', '是', '√', '1'].includes(text)) return 'T';
+            if (['f', 'false', '错误', '错', '否', '×', '0'].includes(text)) return 'F';
+            return text.toUpperCase();
+        };
+        return booleanValue(userAnswer) === booleanValue(correctAnswer);
+    }
     if (Number(type) === 3) {
         const normalize = (value) => String(value).toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
         return normalize(userAnswer) === normalize(correctAnswer);
@@ -98,15 +108,27 @@ const submit = async (userId, sessionId, body = {}) => {
     }
     const answer = body.userAnswer == null ? '' : String(body.userAnswer).trim();
     if (!answer) throw Object.assign(new Error('请先填写答案'), { statusCode: 400 });
-    const correct = checkAnswer(currentQuestion.题型, answer, currentQuestion.答案);
+    const type = Number(currentQuestion.题型);
+    const evaluation = [4, 5, 6].includes(type)
+        ? await subjectiveEvaluation.evaluate({ questionType: type, question: currentQuestion.题目, userAnswer: answer,
+            referenceAnswer: currentQuestion.答案, explanation: currentQuestion.解析 })
+        : { status: checkAnswer(type, answer, currentQuestion.答案) ? 'correct' : 'incorrect', scoreRate: 0 };
+    if (![4, 5, 6].includes(type)) evaluation.scoreRate = evaluation.status === 'correct' ? 1 : 0;
+    const correct = evaluation.status === 'correct'
+        || (evaluation.status === 'partial' && Number(evaluation.scoreRate) >= 0.6);
     const previous = await model.findAnswers(session.id);
-    const recentResults = [...previous.map((item) => item.is_correct), correct ? 1 : 0].slice(-5);
-    const adjustment = evaluateDifficulty({ currentDifficulty: session.current_difficulty, recentResults,
-        signal: session.adjustment_signal, cooldown: session.cooldown_remaining });
+    const conclusive = !evaluation.reviewRequired && !['partial', 'review'].includes(evaluation.status);
+    const recentResults = [...previous.map((item) => item.is_correct), ...(conclusive ? [correct ? 1 : 0] : [])].slice(-5);
+    const adjustment = conclusive
+        ? evaluateDifficulty({ currentDifficulty: session.current_difficulty, recentResults,
+            signal: session.adjustment_signal, cooldown: session.cooldown_remaining })
+        : { difficulty: Number(session.current_difficulty), signal: session.adjustment_signal,
+            cooldown: session.cooldown_remaining, accuracy: null, changed: false,
+            message: evaluation.status === 'partial' ? '本题部分掌握，当前难度保持不变。' : '本题等待复核，当前难度保持不变。' };
     const saved = await model.saveAnswerAndState({ session, question: currentQuestion, userAnswer: answer, isCorrect: correct, adjustment });
     const updated = await model.findSession(session.id, userId);
     const following = saved.complete ? null : await model.findNextQuestion(updated);
-    return { isCorrect: correct, correctAnswer: currentQuestion.答案, explanation: currentQuestion.解析,
+    return { isCorrect: correct, evaluation, correctAnswer: currentQuestion.答案, explanation: currentQuestion.解析,
         progress: { answered: saved.sequence, total: Number(session.planned_count) },
         state: { ...adjustment, difficultyLabel: difficultyGroup(adjustment.difficulty), recentResults },
         completed: saved.complete || !following, nextQuestion: following ? publicQuestion(following.question) : null,
