@@ -49,7 +49,13 @@ const submit = async (data) => {
         username: data.username,
         password: hashedPassword,
         role: data.role,
-        nickname: data.nickname,
+        college: data.college,
+        major: data.major,
+        subjects: data.subjects,
+        grade: data.grade,
+        student_no: data.student_no,
+        employee_no: data.employee_no,
+        title: data.title,
     });
 };
 
@@ -88,9 +94,28 @@ const approve = async (id, reviewerId) => {
         username: request.username,
         password: request.password, // 申请时已 bcrypt 加密，直接复用
         role: request.role,
-        nickname: request.nickname,
+        college: request.college,
+        major: request.major,
+        grade: request.grade,
+        student_no: request.student_no,
+        employee_no: request.employee_no,
+        title: request.title,
         status: 1,
     });
+
+    // 教师审核通过后，自动将申请的科目写入 teacher_subjects 表
+    if (request.role === 'teacher' && request.subjects) {
+        const subjects = String(request.subjects)
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean);
+        if (subjects.length > 0) {
+            const createdUser = await userModel.findByUsername(request.username);
+            if (createdUser) {
+                await userModel.setTeacherSubjects(createdUser.id, subjects);
+            }
+        }
+    }
 
     return registrationModel.updateStatus(id, {
         status: 'approved',
