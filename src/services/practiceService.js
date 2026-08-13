@@ -383,6 +383,61 @@ const getStats = async (userId) => {
     return practiceModel.getStatistics(userId);
 };
 
+// 错题本：分页列表
+const listWrongQuestions = async (userId, options = {}) => {
+    const page = Math.max(parseInt(options.page) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(options.pageSize) || 20, 1), 100);
+    const filter = {
+        chapter: options.chapter,
+        questionType: options.questionType,
+    };
+    const [rows, total] = await Promise.all([
+        practiceModel.findWrongQuestions(userId, { ...filter, page, pageSize }),
+        practiceModel.countWrongQuestions(userId, filter),
+    ]);
+    return { rows, total };
+};
+
+// 错题本：基于当前错题重新组卷练习
+const createWrongExam = async (userId, options = {}) => {
+    const requestedCount = Math.min(Math.max(Number(options.count) || 20, 1), 100);
+    const filter = {
+        chapter: options.chapter,
+        questionType: options.questionType,
+    };
+
+    const wrongIds = await practiceModel.findWrongQuestionIds(userId, filter);
+    if (wrongIds.length === 0) {
+        const error = new Error('错题本中暂无符合条件的题目，先做一套试卷吧');
+        error.statusCode = 404;
+        error.errorCode = 40401;
+        throw error;
+    }
+
+    const pickCount = Math.min(requestedCount, wrongIds.length);
+    const questions = await practiceModel.randomPickByIds(wrongIds, pickCount);
+    const title = options.title || `错题重练-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
+    const { examId, objectiveCount } = await practiceModel.createExam({
+        userId,
+        title,
+        chapter: options.chapter || null,
+        questionType: options.questionType || null,
+        difficulty: null,
+        questions,
+    });
+
+    return {
+        examId,
+        title,
+        total: questions.length,
+        requestedCount,
+        availableCount: wrongIds.length,
+        truncated: questions.length < requestedCount,
+        objectiveCount,
+        questions,
+    };
+};
+
 // ==================== 管理端 ====================
 
 // 权限规则：
@@ -576,6 +631,8 @@ module.exports = {
     getRecords,
     getRecord,
     getStats,
+    listWrongQuestions,
+    createWrongExam,
     adminListRecords,
     adminListUsers,
     adminListUserRecords,

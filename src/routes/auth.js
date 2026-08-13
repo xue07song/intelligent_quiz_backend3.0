@@ -9,7 +9,16 @@ const { requireRoles } = require('../middlewares/permission');
 router.post('/login', authController.login);
 
 // 提交注册申请（公开）
+
+router.post('/register', authController.register);
+
+// 注册申请管理（管理员/教师）
+router.get('/registrations', auth, requireRoles('admin', 'teacher'), authController.listRegistrations);
+router.patch('/registrations/:id/approve', auth, requireRoles('admin', 'teacher'), authController.approveRegistration);
+router.patch('/registrations/:id/reject', auth, requireRoles('admin', 'teacher'), authController.rejectRegistration);
+=======
 router.post('/register', registrationController.register);
+
 
 // 获取当前登录用户信息（需登录）
 router.get('/profile', auth, authController.profile);

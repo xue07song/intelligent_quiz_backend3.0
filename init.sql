@@ -50,6 +50,21 @@ CREATE TABLE IF NOT EXISTS `users` (
 INSERT IGNORE INTO `users` (username, password, role, nickname)
 VALUES ('admin', '$2b$10$jndatEvivNWlc8LYBlgOm.oGt60gq5PrNV6/s4BtyKJLhgBeizoZ2', 'admin', '系统管理员');
 
+-- 注册申请表（学生/教师自助注册，管理员审核）
+CREATE TABLE IF NOT EXISTS `registration_requests` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '注册申请ID',
+  username VARCHAR(50) NOT NULL COMMENT '申请用户名',
+  password VARCHAR(255) NOT NULL COMMENT 'bcrypt 加密密码',
+  role ENUM('student','teacher') NOT NULL DEFAULT 'student' COMMENT '申请角色',
+  nickname VARCHAR(50) NULL COMMENT '昵称',
+  status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending' COMMENT '审核状态',
+  reject_reason VARCHAR(255) NULL COMMENT '拒绝原因',
+  handled_by INT NULL COMMENT '处理人ID',
+  handled_at TIMESTAMP NULL COMMENT '处理时间',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '申请时间',
+  UNIQUE KEY uk_registration_username (username)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='注册申请表';
+
 -- ==================== 练习模块表 ====================
 
 -- 试卷表（学生随机组卷生成的试卷）

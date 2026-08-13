@@ -53,6 +53,10 @@ router.get('/records/:id', practiceController.getRecord);
 // 统计分析（本人，总览 + 趋势 + 按题型）
 router.get('/statistics', practiceController.statistics);
 
+// 错题本（本人）
+router.get('/wrong-questions', requireRoles('student'), practiceController.wrongQuestions);
+router.post('/wrong-exams', requireRoles('student'), practiceController.wrongExam);
+
 // ==================== 管理端接口（教师/管理员）====================
 // 教师只能查看学生数据；管理员可查看所有人并按角色筛选
 
