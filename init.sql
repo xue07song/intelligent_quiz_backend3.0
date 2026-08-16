@@ -250,3 +250,44 @@ CREATE TABLE IF NOT EXISTS `student_classes` (
   INDEX idx_class (class_id),
   CONSTRAINT fk_sc_class FOREIGN KEY (class_id) REFERENCES `classes`(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生班级关联表';
+
+-- ==================== 学生题库与社区模块表 ====================
+
+-- 学生题库表（与学生社区共享，独立于教师题库）
+CREATE TABLE IF NOT EXISTS `student_questions` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '题目ID',
+  owner_id INT NOT NULL COMMENT '所属学生用户ID',
+  major VARCHAR(50) DEFAULT NULL COMMENT '提交时的专业（社区可见范围）',
+  章节 INT DEFAULT 0 COMMENT '题目所属章节编号',
+  题型 INT DEFAULT 2 COMMENT '题型：1判断 2单选 3多选 4填空 5简答 6程序论述',
+  序号 INT DEFAULT 0 COMMENT '题目排序',
+  题目 TEXT NOT NULL COMMENT '题干内容',
+  选项 TEXT COMMENT '选项内容',
+  答案 VARCHAR(255) COMMENT '正确答案',
+  解析 TEXT COMMENT '答案解析',
+  难度 VARCHAR(10) COMMENT '难度标识 1-5',
+  知识点 VARCHAR(255) COMMENT '关联知识点',
+  科目 VARCHAR(50) DEFAULT NULL COMMENT '所属科目',
+  source VARCHAR(20) NOT NULL DEFAULT 'manual' COMMENT '来源：manual手工 image图片识别',
+  is_public TINYINT NOT NULL DEFAULT 0 COMMENT '是否公开到同专业社区',
+  review_status ENUM('private','pending','approved','rejected') NOT NULL DEFAULT 'private' COMMENT '审核状态',
+  reject_reason VARCHAR(255) DEFAULT NULL COMMENT '拒绝原因',
+  reviewed_by INT DEFAULT NULL COMMENT '审核人用户ID',
+  reviewed_at TIMESTAMP NULL DEFAULT NULL COMMENT '审核时间',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  INDEX idx_owner (owner_id),
+  INDEX idx_major_status (major, review_status),
+  INDEX idx_review (review_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生题库表';
+
+-- 学生版主表（按专业审核社区题目）
+CREATE TABLE IF NOT EXISTS `student_moderators` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+  user_id INT NOT NULL COMMENT '学生用户ID',
+  major VARCHAR(50) NOT NULL COMMENT '负责审核的专业',
+  created_by INT DEFAULT NULL COMMENT '创建人（管理员）',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  UNIQUE KEY uk_user_major (user_id, major),
+  INDEX idx_major (major)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生版主表（按专业）';

@@ -49,6 +49,45 @@ const ensureSchema = async () => {
             UNIQUE KEY uk_registration_username (username)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS \`student_questions\` (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            owner_id INT NOT NULL,
+            major VARCHAR(50) DEFAULT NULL,
+            章节 INT DEFAULT 0,
+            题型 INT DEFAULT 2,
+            序号 INT DEFAULT 0,
+            题目 TEXT NOT NULL,
+            选项 TEXT NULL,
+            答案 VARCHAR(255) NULL,
+            解析 TEXT NULL,
+            难度 VARCHAR(10) NULL,
+            知识点 VARCHAR(255) NULL,
+            科目 VARCHAR(50) NULL,
+            source VARCHAR(20) NOT NULL DEFAULT 'manual',
+            is_public TINYINT NOT NULL DEFAULT 0,
+            review_status ENUM('private','pending','approved','rejected') NOT NULL DEFAULT 'private',
+            reject_reason VARCHAR(255) NULL,
+            reviewed_by INT NULL,
+            reviewed_at TIMESTAMP NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_owner (owner_id),
+            INDEX idx_major_status (major, review_status),
+            INDEX idx_review (review_status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS \`student_moderators\` (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            major VARCHAR(50) NOT NULL,
+            created_by INT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_user_major (user_id, major),
+            INDEX idx_major (major)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
 };
 
 ensureSchema()

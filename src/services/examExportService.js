@@ -19,28 +19,28 @@ const typeName = (type) => TYPE_NAMES[Number(type)] || `题型${type}`;
 
 const splitLines = (text) => String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 
-const buildDocx = (exam, withAnswers) => {
+const buildDocxFromQuestions = (meta, questions, withAnswers) => {
     const children = [];
 
     children.push(new Paragraph({
-        text: exam.title || '练习试卷',
+        text: meta.title || '练习试卷',
         bold: true,
         size: 32,
         alignment: AlignmentType.CENTER,
         spacing: { after: 200 },
     }));
     children.push(new Paragraph({
-        text: `科目：${exam.subject || '不限'}    题数：${exam.total_count || exam.questions.length}    客观题：${exam.objective_count || 0}`,
+        text: `科目：${meta.subject || '不限'}    题数：${meta.totalCount || questions.length}    客观题：${meta.objectiveCount || 0}`,
         alignment: AlignmentType.CENTER,
         spacing: { after: 100 },
     }));
     children.push(new Paragraph({
-        text: `创建人：${exam.creator_name || '系统'}    创建时间：${formatDate(exam.created_at)}`,
+        text: `创建人：${meta.creatorName || '系统'}    创建时间：${formatDate(meta.createdAt)}`,
         alignment: AlignmentType.CENTER,
         spacing: { after: 300 },
     }));
 
-    exam.questions.forEach((q, index) => {
+    questions.forEach((q, index) => {
         children.push(new Paragraph({
             children: [new TextRun({ text: `${index + 1}. ${q.题目}`, bold: true })],
             spacing: { before: 160, after: 80 },
@@ -68,7 +68,7 @@ const buildDocx = (exam, withAnswers) => {
             alignment: AlignmentType.CENTER,
             spacing: { after: 200 },
         }));
-        exam.questions.forEach((q, index) => {
+        questions.forEach((q, index) => {
             children.push(new Paragraph({
                 children: [new TextRun({ text: `${index + 1}. 答案：${q.答案 || '略'}`, bold: true })],
                 spacing: { before: 120, after: 60 },
@@ -86,12 +86,12 @@ const buildDocx = (exam, withAnswers) => {
     return new Document({ sections: [{ children }] });
 };
 
-const buildExcel = (exam, withAnswers) => {
+const buildExcelFromQuestions = (questions, withAnswers) => {
     const headers = ['序号', 'ID', '题型', '题目', '选项'];
     if (withAnswers) headers.push('答案', '解析');
     headers.push('难度', '知识点');
 
-    const rows = exam.questions.map((q, index) => {
+    const rows = questions.map((q, index) => {
         const row = [
             index + 1,
             q.id,
@@ -121,6 +121,11 @@ const buildExcel = (exam, withAnswers) => {
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 };
 
+const buildDocxBuffer = async (meta, questions, withAnswers) => {
+    const doc = buildDocxFromQuestions(meta, questions, withAnswers);
+    return Packer.toBuffer(doc);
+};
+
 const exportExam = async ({ examId, actor, format = 'docx', withAnswers = false }) => {
     const exam = await practiceService.getExam(examId, actor.id, actor.role);
     const normalizedFormat = format === 'xlsx' ? 'xlsx' : 'docx';
@@ -129,14 +134,20 @@ const exportExam = async ({ examId, actor, format = 'docx', withAnswers = false 
 
     if (normalizedFormat === 'xlsx') {
         return {
-            buffer: buildExcel(exam, withAnswers),
+            buffer: buildExcelFromQuestions(exam.questions, withAnswers),
             mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             filename: `${baseName}_${answerLabel}.xlsx`,
         };
     }
 
-    const doc = buildDocx(exam, withAnswers);
-    const buffer = await Packer.toBuffer(doc);
+    const buffer = await buildDocxBuffer({
+        title: exam.title,
+        subject: exam.subject,
+        totalCount: exam.total_count,
+        objectiveCount: exam.objective_count,
+        creatorName: exam.creator_name,
+        createdAt: exam.created_at,
+    }, exam.questions, withAnswers);
     return {
         buffer,
         mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -144,4 +155,4 @@ const exportExam = async ({ examId, actor, format = 'docx', withAnswers = false 
     };
 };
 
-module.exports = { exportExam };
+module.exports = { exportExam, buildDocxBuffer, buildExcelFromQuestions, cleanFilename };

@@ -1,5 +1,7 @@
 const axios = require('axios');
 const questionService = require('./questionService');
+const studentQuestionModel = require('../models/studentQuestionModel');
+const userModel = require('../models/userModel');
 
 const GLM_VISION_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 const GLM_VISION_MODEL = process.env.GLM_VISION_MODEL || 'glm-4v-flash';
@@ -204,4 +206,42 @@ const importQuestions = async ({ items, subject, actor }) => {
     return questionService.batchImport(normalized, { subject }, actor);
 };
 
-module.exports = { recognizeImage, importQuestions };
+const importStudentQuestions = async ({ items, actor }) => {
+    if (!Array.isArray(items) || items.length === 0) {
+        throw makeError('导入题目不能为空', 400, 40001);
+    }
+    const user = await userModel.findById(actor.id);
+    const major = user && user.major ? String(user.major).trim() : null;
+    const errors = [];
+    let inserted = 0;
+
+    for (let index = 0; index < items.length; index += 1) {
+        try {
+            const normalized = normalizeQuestion(items[index], index);
+            await studentQuestionModel.create({
+                owner_id: actor.id,
+                major: major || null,
+                章节: normalized.章节,
+                题型: normalized.题型,
+                序号: normalized.序号,
+                题目: normalized.题目,
+                选项: normalized.选项,
+                答案: normalized.答案,
+                解析: normalized.解析,
+                难度: normalized.难度,
+                知识点: normalized.知识点,
+                科目: normalized.科目,
+                source: 'image',
+                is_public: 0,
+                review_status: 'private',
+            });
+            inserted += 1;
+        } catch (err) {
+            errors.push({ row: index + 1, reason: err.message || '导入失败' });
+        }
+    }
+
+    return { total: items.length, inserted, skipped: 0, invalid: errors.length, errors };
+};
+
+module.exports = { recognizeImage, importQuestions, importStudentQuestions };

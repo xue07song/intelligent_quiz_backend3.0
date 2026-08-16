@@ -10,6 +10,7 @@ const auth = require('../middlewares/auth');
 const { success } = require('../utils/response');
 const { SUBJECTS } = require('../config/subjects');
 const aiAssistantRoutes = require('./aiAssistant');
+const adminRoutes = require('./admin');
 
 const router = express.Router();
 
@@ -26,5 +27,6 @@ router.get('/subjects', auth, (req, res) => {
     res.json(success(SUBJECTS));
 });
 router.use('/ai-assistant', aiAssistantRoutes);
+router.use('/admin', adminRoutes);
 
 module.exports = router;
