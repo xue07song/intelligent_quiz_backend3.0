@@ -53,7 +53,7 @@ const ensureSchema = async () => {
         CREATE TABLE IF NOT EXISTS \`student_questions\` (
             id INT AUTO_INCREMENT PRIMARY KEY,
             owner_id INT NOT NULL,
-            major VARCHAR(50) DEFAULT NULL,
+            college VARCHAR(50) DEFAULT NULL,
             章节 INT DEFAULT 0,
             题型 INT DEFAULT 2,
             序号 INT DEFAULT 0,
@@ -73,7 +73,7 @@ const ensureSchema = async () => {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_owner (owner_id),
-            INDEX idx_major_status (major, review_status),
+            INDEX idx_college_status (college, review_status),
             INDEX idx_review (review_status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
@@ -81,11 +81,11 @@ const ensureSchema = async () => {
         CREATE TABLE IF NOT EXISTS \`student_moderators\` (
             id INT AUTO_INCREMENT PRIMARY KEY,
             user_id INT NOT NULL,
-            major VARCHAR(50) NOT NULL,
+            college VARCHAR(50) NOT NULL,
             created_by INT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_user_major (user_id, major),
-            INDEX idx_major (major)
+            UNIQUE KEY uk_user_college (user_id, college),
+            INDEX idx_college (college)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 };

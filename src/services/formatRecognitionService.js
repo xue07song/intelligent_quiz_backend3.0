@@ -211,7 +211,7 @@ const importStudentQuestions = async ({ items, actor }) => {
         throw makeError('导入题目不能为空', 400, 40001);
     }
     const user = await userModel.findById(actor.id);
-    const major = user && user.major ? String(user.major).trim() : null;
+    const college = user && user.college ? String(user.college).trim() : null;
     const errors = [];
     let inserted = 0;
 
@@ -220,7 +220,7 @@ const importStudentQuestions = async ({ items, actor }) => {
             const normalized = normalizeQuestion(items[index], index);
             await studentQuestionModel.create({
                 owner_id: actor.id,
-                major: major || null,
+                college: college || null,
                 章节: normalized.章节,
                 题型: normalized.题型,
                 序号: normalized.序号,

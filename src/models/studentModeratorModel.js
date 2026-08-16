@@ -2,18 +2,18 @@ const pool = require('../config/db');
 
 const TABLE = '`student_moderators`';
 
-const findByUserMajor = async (userId, major) => {
+const findByUserCollege = async (userId, college) => {
     const [rows] = await pool.query(
-        `SELECT * FROM ${TABLE} WHERE user_id = ? AND major = ? LIMIT 1`,
-        [userId, major]
+        `SELECT * FROM ${TABLE} WHERE user_id = ? AND college = ? LIMIT 1`,
+        [userId, college]
     );
     return rows[0] || null;
 };
 
-const create = async ({ userId, major, createdBy }) => {
+const create = async ({ userId, college, createdBy }) => {
     const [result] = await pool.query(
-        `INSERT INTO ${TABLE} (user_id, major, created_by) VALUES (?, ?, ?)`,
-        [userId, major, createdBy ?? null]
+        `INSERT INTO ${TABLE} (user_id, college, created_by) VALUES (?, ?, ?)`,
+        [userId, college, createdBy ?? null]
     );
     return result;
 };
@@ -22,7 +22,7 @@ const findAll = async ({ page = 1, pageSize = 20, keyword = '' } = {}) => {
     const conditions = [];
     const params = [];
     if (keyword) {
-        conditions.push('(u.username LIKE ? OR u.nickname LIKE ? OR sm.major LIKE ?)');
+        conditions.push('(u.username LIKE ? OR u.nickname LIKE ? OR sm.college LIKE ?)');
         const kw = `%${keyword}%`;
         params.push(kw, kw, kw);
     }
@@ -34,7 +34,7 @@ const findAll = async ({ page = 1, pageSize = 20, keyword = '' } = {}) => {
     const total = countRows[0].total;
     const offset = (page - 1) * pageSize;
     const [rows] = await pool.query(
-        `SELECT sm.*, u.username, u.nickname, u.major AS user_major
+        `SELECT sm.*, u.username, u.nickname, u.college AS user_college
          FROM ${TABLE} sm
          LEFT JOIN users u ON u.id = sm.user_id
          ${where}
@@ -49,4 +49,4 @@ const remove = async (id) => {
     return result;
 };
 
-module.exports = { findByUserMajor, create, findAll, remove };
+module.exports = { findByUserCollege, create, findAll, remove };

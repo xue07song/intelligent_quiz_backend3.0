@@ -143,7 +143,7 @@ const adminList = async (req, res, next) => {
                 page,
                 pageSize,
                 status: req.query.status,
-                major: req.query.major,
+                college: req.query.college,
                 keyword: req.query.keyword,
                 subject: req.query.subject,
                 题型: req.query.题型,
@@ -183,7 +183,7 @@ const createModerator = async (req, res, next) => {
         const result = await studentQuestionService.createModerator({
             actor: req.user,
             userId: req.body.userId,
-            major: req.body.major,
+            college: req.body.college,
         });
         res.status(201).json(success(result, '✅ 学生版主已添加'));
     } catch (err) {

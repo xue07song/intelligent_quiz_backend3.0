@@ -47,11 +47,11 @@ const findByOwner = async (ownerId, options = {}) => {
     return buildPagedResult(conditions, params, page, pageSize);
 };
 
-const findCommunity = async (major, options = {}) => {
-    if (!major) return { rows: [], total: 0 };
+const findCommunity = async (college, options = {}) => {
+    if (!college) return { rows: [], total: 0 };
     const { page = 1, pageSize = 20, keyword = '', subject = '', 题型 = '' } = options;
-    const conditions = ['sq.review_status = ?', 'sq.is_public = 1', 'sq.major = ?'];
-    const params = ['approved', 1, major];
+    const conditions = ['sq.review_status = ?', 'sq.is_public = 1', 'sq.college = ?'];
+    const params = ['approved', 1, college];
     if (keyword) {
         conditions.push('(sq.`题目` LIKE ? OR sq.`知识点` LIKE ?)');
         const kw = `%${keyword}%`;
@@ -75,11 +75,11 @@ const findCommunity = async (major, options = {}) => {
     );
 };
 
-const findPending = async (major, options = {}) => {
-    if (!major) return { rows: [], total: 0 };
+const findPending = async (college, options = {}) => {
+    if (!college) return { rows: [], total: 0 };
     const { page = 1, pageSize = 20, keyword = '' } = options;
-    const conditions = ['sq.review_status = ?', 'sq.major = ?'];
-    const params = ['pending', major];
+    const conditions = ['sq.review_status = ?', 'sq.college = ?'];
+    const params = ['pending', college];
     if (keyword) {
         conditions.push('(sq.`题目` LIKE ? OR sq.`知识点` LIKE ?)');
         const kw = `%${keyword}%`;
@@ -96,16 +96,16 @@ const findPending = async (major, options = {}) => {
 };
 
 const findAllAdmin = async (options = {}) => {
-    const { page = 1, pageSize = 20, status = '', major = '', keyword = '', subject = '', 题型 = '' } = options;
+    const { page = 1, pageSize = 20, status = '', college = '', keyword = '', subject = '', 题型 = '' } = options;
     const conditions = [];
     const params = [];
     if (status && status !== 'all') {
         conditions.push('sq.review_status = ?');
         params.push(status);
     }
-    if (major) {
-        conditions.push('sq.major = ?');
-        params.push(major);
+    if (college) {
+        conditions.push('sq.college = ?');
+        params.push(college);
     }
     if (keyword) {
         conditions.push('(sq.`题目` LIKE ? OR sq.`知识点` LIKE ?)');
@@ -138,11 +138,11 @@ const findById = async (id) => {
 const create = async (data) => {
     const [result] = await pool.query(
         `INSERT INTO ${TABLE}
-            (owner_id, major, 章节, 题型, 序号, 题目, 选项, 答案, 解析, 难度, 知识点, 科目, source, is_public, review_status)
+            (owner_id, college, 章节, 题型, 序号, 题目, 选项, 答案, 解析, 难度, 知识点, 科目, source, is_public, review_status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             data.owner_id,
-            data.major ?? null,
+            data.college ?? null,
             Number(data.章节) || 0,
             Number(data.题型) || 2,
             Number(data.序号) || 0,

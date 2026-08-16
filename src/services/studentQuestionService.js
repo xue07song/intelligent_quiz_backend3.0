@@ -27,9 +27,9 @@ const normalizeQuestionData = (data) => {
     };
 };
 
-const getActorMajor = async (actor) => {
+const getActorCollege = async (actor) => {
     const user = await userModel.findById(actor.id);
-    return user && user.major ? String(user.major).trim() : '';
+    return user && user.college ? String(user.college).trim() : '';
 };
 
 const getQuestions = async ({ actor, scope = 'own', options = {} }) => {
@@ -38,27 +38,27 @@ const getQuestions = async ({ actor, scope = 'own', options = {} }) => {
         return studentQuestionModel.findAllAdmin(options);
     }
     if (scope === 'community') {
-        const major = await getActorMajor(actor);
-        if (!major) return { rows: [], total: 0 };
-        return studentQuestionModel.findCommunity(major, options);
+        const college = await getActorCollege(actor);
+        if (!college) return { rows: [], total: 0 };
+        return studentQuestionModel.findCommunity(college, options);
     }
     return studentQuestionModel.findByOwner(actor.id, options);
 };
 
 const getReviewQueue = async ({ actor, options = {} }) => {
-    const major = await getActorMajor(actor);
-    if (!major) return { rows: [], total: 0 };
-    const isModerator = await studentModeratorModel.findByUserMajor(actor.id, major);
+    const college = await getActorCollege(actor);
+    if (!college) return { rows: [], total: 0 };
+    const isModerator = await studentModeratorModel.findByUserCollege(actor.id, college);
     if (!isModerator) return { rows: [], total: 0 };
-    return studentQuestionModel.findPending(major, options);
+    return studentQuestionModel.findPending(college, options);
 };
 
 const create = async ({ actor, data, source = 'manual', share = false }) => {
-    const major = await getActorMajor(actor);
+    const college = await getActorCollege(actor);
     const normalized = normalizeQuestionData(data);
     const result = await studentQuestionModel.create({
         owner_id: actor.id,
-        major: major || null,
+        college: college || null,
         ...normalized,
         source,
         is_public: share ? 1 : 0,
@@ -94,8 +94,8 @@ const share = async ({ actor, id }) => {
     const row = await studentQuestionModel.findById(id);
     if (!row) throw makeError('题目不存在', 404, 40401);
     if (row.owner_id !== actor.id) throw makeError('只能共享自己的题目', 403, 40301);
-    const major = await getActorMajor(actor);
-    if (!major) throw makeError('请先在个人中心完善专业信息，才能共享到同专业社区', 400, 40001);
+    const college = await getActorCollege(actor);
+    if (!college) throw makeError('请先在个人中心完善学院信息，才能共享到同学院社区', 400, 40001);
     await studentQuestionModel.submitForShare(id, actor.id);
     return studentQuestionModel.findById(id);
 };
@@ -107,11 +107,11 @@ const review = async ({ actor, id, action, reason }) => {
     if (!['approve', 'reject'].includes(action)) throw makeError('审核动作无效', 400, 40001);
 
     const isAdmin = actor.role === 'admin';
-    const isModerator = !isAdmin && row.major
-        ? await studentModeratorModel.findByUserMajor(actor.id, row.major)
+    const isModerator = !isAdmin && row.college
+        ? await studentModeratorModel.findByUserCollege(actor.id, row.college)
         : null;
     if (!isAdmin && !isModerator) {
-        throw makeError('仅管理员或同专业学生版主可审核', 403, 40301);
+        throw makeError('仅管理员或同学院学生版主可审核', 403, 40301);
     }
 
     await studentQuestionModel.review(id, { reviewerId: actor.id, action, reason });
@@ -124,7 +124,7 @@ const exportQuestions = async ({ actor, scope = 'own', format = 'docx', withAnsw
     if (!questions.length) throw makeError('没有可导出的题目', 400, 40001);
 
     const meta = {
-        title: scope === 'community' ? '同专业共享题目' : '我的题库题目',
+        title: scope === 'community' ? '同学院共享题目' : '我的题库题目',
         subject: (questions.find((q) => q.科目) || {}).科目 || '学生题库',
         totalCount: questions.length,
         objectiveCount: questions.filter((q) => [1, 2, 3, 4].includes(Number(q.题型))).length,
@@ -152,22 +152,22 @@ const exportQuestions = async ({ actor, scope = 'own', format = 'docx', withAnsw
 
 const listModerators = async (options = {}) => studentModeratorModel.findAll(options);
 
-const createModerator = async ({ actor, userId, major }) => {
+const createModerator = async ({ actor, userId, college }) => {
     const user = await userModel.findById(userId);
     if (!user || user.role !== 'student') {
         throw makeError('版主必须是学生用户', 400, 40001);
     }
-    if (!major || !String(major).trim()) {
-        throw makeError('请选择要负责审核的专业', 400, 40001);
+    if (!college || !String(college).trim()) {
+        throw makeError('请填写要负责审核的学院', 400, 40001);
     }
-    const exists = await studentModeratorModel.findByUserMajor(userId, String(major).trim());
-    if (exists) throw makeError('该学生已是此专业版主', 409, 40901);
+    const exists = await studentModeratorModel.findByUserCollege(userId, String(college).trim());
+    if (exists) throw makeError('该学生已是此学院版主', 409, 40901);
     await studentModeratorModel.create({
         userId,
-        major: String(major).trim(),
+        college: String(college).trim(),
         createdBy: actor.id,
     });
-    return { userId, major: String(major).trim() };
+    return { userId, college: String(college).trim() };
 };
 
 const removeModerator = async (id) => {
