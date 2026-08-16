@@ -32,6 +32,9 @@ router.get('/learning-analysis/students/:userId', requireRoles('teacher', 'admin
 // 试卷列表
 router.get('/exams', practiceController.listExams);
 
+// 导出试卷（Word / Excel，可带答案）
+router.get('/exams/:id/export', requireRoles('admin', 'teacher'), practiceController.exportExam);
+
 // 试卷详情（含题目）
 router.get('/exams/:id', practiceController.getExam);
 

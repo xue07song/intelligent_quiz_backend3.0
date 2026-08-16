@@ -1,4 +1,5 @@
 const practiceService = require('../services/practiceService');
+const examExportService = require('../services/examExportService');
 const { success, paginated } = require('../utils/response');
 
 // 统一构造操作者上下文（供 service 做科目权限过滤）
@@ -254,11 +255,29 @@ const questionDetail = async (req, res, next) => {
     }
 };
 
+const exportExam = async (req, res, next) => {
+    try {
+        const format = String(req.query.format || 'docx').toLowerCase();
+        const withAnswers = req.query.withAnswers === 'true' || req.query.withAnswers === '1';
+        const result = await examExportService.exportExam({
+            examId: req.params.id,
+            actor: buildActor(req),
+            format,
+            withAnswers,
+        });
+        res.setHeader('Content-Type', result.mime);
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`);
+        res.send(result.buffer);
+    } catch (err) {
+        next(err);
+    }
+};
+
 module.exports = {
 
     generate, inventory, previewRule, generateRule, listExams, getExam, submit, listRecords, getRecord, statistics,
     getExamDraft, saveExamDraft, wrongQuestions, wrongExam,
 
     adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
-    reviewSubjectiveAnswer, examAnalytics, questionDetail,
+    reviewSubjectiveAnswer, examAnalytics, questionDetail, exportExam,
 };

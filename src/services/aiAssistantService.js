@@ -226,25 +226,39 @@ const findSimilarQuestions = async (userId, currentQuestionId, currentExamId) =>
 
 const navigationReply = (message) => {
     const rules = [
-        { pattern: /怎么开始做题|开始练习|如何练习/, reply: '点击左侧「答题练习」进入试卷列表，点击“开始答题”即可；也可以在「智能组卷」按需生成试卷。' },
-        { pattern: /错题本/, reply: '「错题本」在 答题练习 → 错题本，做错的题会自动收录，还支持错题重练。' },
+        { pattern: /怎么开始做题|开始练习|如何练习|开始答题/, reply: '点击左侧「答题练习」进入「试卷列表」，选择试卷后点击“开始答题”；也可以点右下角悬浮球，让我直接“生成一套试卷”。' },
+        { pattern: /错题本|错题重练/, reply: '「错题本」在 答题练习 → 错题本，做错的题会自动收录，支持按章节/题型筛选，还能一键错题重练。' },
+        { pattern: /自适应练习|自适应成果|难度自适应/, reply: '点击左侧「自适应练习」开始练习，完成后可在「我的自适应成果」查看难度轨迹和进步情况。' },
+        { pattern: /学习分析|学情分析|个性化分析|掌握度/, reply: '点击左侧「我的学习分析」，可查看掌握度、进步趋势、薄弱知识点，以及知识保持和跨场景迁移分析。' },
+        { pattern: /智能组卷|组卷|生成试卷|生成练习卷|出卷/, reply: '学生可以直接点悬浮球“生成练习卷”，或对我说“生成一套试卷”；教师端入口在「出卷与学生管理 → 智能组卷」。' },
+        { pattern: /答题记录|历史成绩|我的记录/, reply: '「我的答题记录」在 答题练习 → 我的答题记录，可查看历史成绩和逐题详情。' },
+        { pattern: /统计分析|我的统计|正确率趋势|统计/, reply: '「我的统计」在 答题练习 → 我的统计，可查看正确率趋势和薄弱题型。' },
         { pattern: /收藏|标记|星标/, reply: '在答题页或错题本中，点击题目旁边的星标⭐，即可收藏该题，方便后续集中复习。' },
-        { pattern: /智能组卷|组卷/, reply: '「智能组卷」在 答题练习 → 智能组卷，可以按章节、题型、难度生成试卷。' },
-        { pattern: /答题记录|记录/, reply: '「答题记录」在 答题练习 → 答题记录，可查看历史成绩和逐题详情。' },
-        { pattern: /统计分析|统计|分析/, reply: '「统计分析」在 答题练习 → 统计分析，可查看正确率趋势和薄弱题型。' },
-        { pattern: /个人中心|资料/, reply: '「个人中心」可以修改资料、查看历史题目/试卷和收藏题目。' },
-        { pattern: /反馈|建议/, reply: '点击左侧「用户反馈」即可提交建议或问题。' },
+        { pattern: /个人中心|资料|改密码/, reply: '点击左侧「个人中心」可以修改资料、查看历史题目/试卷和收藏题目；修改密码在右上角「改密码」。' },
+        { pattern: /反馈|建议|意见/, reply: '点击左侧「用户反馈」即可提交建议或问题。' },
+        { pattern: /注册审核|审核申请/, reply: '「注册审核」在左侧菜单，管理员/教师可查看待审核申请，并通过或拒绝。' },
+        { pattern: /班级管理|分班|调班/, reply: '「班级管理」在 出卷与学生管理 → 班级管理，支持创建班级、批量分班/调班/移出学生。' },
+        { pattern: /用户管理|用户列表|账号管理/, reply: '「用户管理」仅管理员可见，位于左侧菜单，可新增、编辑或禁用用户。' },
+        { pattern: /试卷分析|做题管理|答题管理/, reply: '「试卷分析」在 出卷与学生管理 → 试卷分析，可查看试卷答题情况与学生明细。' },
+        { pattern: /自适应学情|学生个性化/, reply: '「自适应学情」在左侧菜单（教师/管理员），可查看学生自适应练习的整体进度和薄弱环节。' },
+        { pattern: /悬浮球|智能助手|AI助手|AI悬浮球/, reply: '我就是右下角的 AI 悬浮球助手，可以帮你组卷、找同类题、浓缩错题、分析薄弱点，也能带你快速进入各功能页面。' },
+        { pattern: /题库管理|题目管理|导入题目|AI出题/, reply: '「题库管理」在左侧菜单（教师/管理员），可新增、编辑、批量导入题目，也可以使用 AI 自动出题。' },
     ];
     for (const rule of rules) {
         if (rule.pattern.test(message)) return rule.reply;
     }
-    return '您可以通过左侧导航进入 答题练习、个人中心、用户反馈；练习相关问题可以问我“怎么开始做题”。';
+    return '您可以通过左侧导航进入「答题练习」「自适应练习」「我的学习分析」「个人中心」「用户反馈」；也可以问我“怎么开始做题”。';
 };
 
 const chat = async ({ userId, message, currentPage, currentQuestionId, currentExamId, examOptions }) => {
     const normalizedMessage = String(message || '').trim();
     if (!normalizedMessage) {
         return { type: 'text', reply: '请输入您想咨询的内容。' };
+    }
+
+    const navigationIntentPattern = /在哪|在哪里|怎么进|如何进|从哪里|入口|怎么用|如何用|怎么找|哪里找|在哪里看|在哪里查/;
+    if (navigationIntentPattern.test(normalizedMessage)) {
+        return { type: 'text', reply: navigationReply(normalizedMessage) };
     }
 
     const hasExamOptions =
