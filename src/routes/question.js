@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const questionController = require('../controllers/questionController');
+const formatRecognitionController = require('../controllers/formatRecognitionController');
 const { validateQuestionInput, validateIdParam } = require('../middlewares/validator');
 const auth = require('../middlewares/auth');
 const { requireRoles } = require('../middlewares/permission');
@@ -23,6 +24,20 @@ const upload = multer({
     },
 });
 
+// 图片识别上传：内存存储，仅允许常见图片格式
+const imageUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const allowed = ['image/png', 'image/jpeg', 'image/webp'];
+        if (allowed.includes(file.mimetype) || /\.(png|jpe?g|webp)$/i.test(file.originalname)) {
+            cb(null, true);
+        } else {
+            cb(new Error('仅支持 PNG / JPG / JPEG / WebP 图片'));
+        }
+    },
+});
+
 // 所有题目接口均需登录
 router.use(auth);
 
@@ -30,6 +45,8 @@ router.use(auth);
 // 注意：批量接口放在 /:id 之前，避免被动态参数匹配
 router.post('/batch-import', requireRoles('admin', 'teacher'), upload.single('file'), questionController.batchImport);
 router.post('/batch-delete', requireRoles('admin', 'teacher'), questionController.batchDelete);
+router.post('/format-recognition/recognize', requireRoles('admin', 'teacher'), imageUpload.single('image'), formatRecognitionController.recognize);
+router.post('/format-recognition/import', requireRoles('admin', 'teacher'), formatRecognitionController.importQuestions);
 router.post('/', requireRoles('admin', 'teacher'), validateQuestionInput, questionController.create);
 router.get('/', questionController.findAll);
 router.get('/search', questionController.search);
