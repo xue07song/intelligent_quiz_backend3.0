@@ -30,7 +30,7 @@ const list = async (req, res, next) => {
 // 审核通过（管理员/老师）
 const approve = async (req, res, next) => {
     try {
-        await registrationService.approve(req.params.id, req.user.id);
+        await registrationService.approve(req.params.id, req.user);
         res.json(success(null, '✅ 已通过审核，用户账号已创建'));
     } catch (err) {
         next(err);
@@ -41,7 +41,7 @@ const approve = async (req, res, next) => {
 const reject = async (req, res, next) => {
     try {
         const reason = req.body.reason || '未提供拒绝原因';
-        await registrationService.reject(req.params.id, req.user.id, reason);
+        await registrationService.reject(req.params.id, req.user, reason);
         res.json(success(null, '✅ 已拒绝该注册申请'));
     } catch (err) {
         next(err);

@@ -1,9 +1,10 @@
 const model = require('../models/learningAnalysisModel');
+const { normalizeDifficultyLevel } = require('../utils/difficulty');
 
 const pct = (correct, total) => total ? Math.round(correct * 100 / total) : 0;
 const daysSince = (value) => value ? Math.floor((Date.now() - new Date(value).getTime()) / 86400000) : null;
 const group = (rows, key) => Object.values(rows.reduce((map, row) => {
-    const value = row[key] == null ? '未标注' : String(row[key]);
+    const value = row[key] == null || String(row[key]).trim() === '' ? '未标注' : String(row[key]);
     const item = map[value] ||= { key: value, answered: 0, correct: 0, latestAt: null, sources: new Set() };
     item.answered += 1; item.correct += Number(row.isCorrect) === 1 ? 1 : 0;
     if (!item.latestAt || new Date(row.answeredAt) > new Date(item.latestAt)) item.latestAt = row.answeredAt;
@@ -13,14 +14,24 @@ const group = (rows, key) => Object.values(rows.reduce((map, row) => {
     return map;
 }, {})).map(item => { const accuracy=pct(item.correct,item.answered); const masteryScore=Math.round((item.correct+3)*100/(item.answered+5)); return { ...item, accuracy, masteryScore, sampleLevel:item.answered>=10?'充分':item.answered>=5?'一般':'较少', sourceCount:item.sources.size, sources:undefined }; });
 
-const analyze = async (userId) => {
+const teacherExamIds = async (teacherId) => {
+    const practiceModel = require('../models/practiceModel');
+    return practiceModel.findExamIdsByUser(teacherId);
+};
+
+const analyze = async (userId, examIds = null) => {
     const student = await model.getStudent(userId);
     if (!student) throw Object.assign(new Error('学生不存在'), { statusCode: 404 });
     const [records, examRows, adaptiveRows] = await Promise.all([
-        model.getExamRecords(userId), model.getExamAnswers(userId), model.getAdaptiveAnswers(userId),
+        model.getExamRecords(userId, examIds), model.getExamAnswers(userId, examIds), model.getAdaptiveAnswers(userId),
     ]);
+    const normalizedExamRows = examRows.map((row) => ({
+        ...row,
+        difficulty: normalizeDifficultyLevel(row.difficulty),
+        knowledgePoint: String(row.knowledgePoint || '').trim() || '未标注知识点',
+    }));
     const answers = [
-        ...examRows.map(row => ({ ...row, source: '试卷' })),
+        ...normalizedExamRows.map(row => ({ ...row, source: '试卷' })),
         ...adaptiveRows.map(row => ({ ...row, source: '自适应练习' })),
     ].sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt));
     const answered = answers.length, correct = answers.filter(row => Number(row.isCorrect) === 1).length;
@@ -65,12 +76,19 @@ const analyze = async (userId) => {
         insights:{ retention, migration, pace:{ averageSeconds:Math.round(avgSeconds), meaning:'按整卷总用时估算每题节奏；目前未采集单题停留时间，因此不判断某一道题是否过快。' } }, wrongQuestions:{ exam:wrongQuestions.filter(x=>x.source==='试卷'), adaptive:wrongQuestions.filter(x=>x.source==='自适应练习') }, dailyTrend, recommendations };
 };
 
-const overview = async () => {
-    const students = await model.getStudents();
-    const analyses = await Promise.all(students.map(student => analyze(student.id)));
+const overview = async (actor) => {
+    let examIds = null;
+    if (actor && actor.role === 'teacher') {
+        examIds = await teacherExamIds(actor.id);
+        if (examIds.length === 0) {
+            return { generatedAt: new Date(), students: [], commonWeaknesses: [] };
+        }
+    }
+    const students = await model.getStudents(examIds);
+    const analyses = await Promise.all(students.map(student => analyze(student.id, examIds)));
     return { generatedAt:new Date(), students:analyses.map(a=>{const examAccuracy=pct(a.coverage.examCorrect||0,a.coverage.examAnswers),adaptiveAccuracy=pct(a.coverage.adaptiveCorrect||0,a.coverage.adaptiveAnswers);const concernReasons=[];if(a.coverage.examAnswers&&examAccuracy<60)concernReasons.push(`普通试卷正确率${examAccuracy}%`);if(a.coverage.adaptiveAnswers&&adaptiveAccuracy<60)concernReasons.push(`自适应练习正确率${adaptiveAccuracy}%`);return ({ ...a.student, ...a.summary, coverage:a.coverage,examAccuracy,adaptiveAccuracy,concernReasons,
         status:concernReasons.length?'需要关注':a.summary.answered<5?'数据积累中':a.summary.change>=10?'近期进步':a.summary.change<=-10?'近期波动':'表现稳定' });}),
         commonWeaknesses:Object.values(analyses.flatMap(a=>a.knowledge).reduce((m,x)=>{const i=m[x.key]||={key:x.key,answered:0,correct:0,students:0};i.answered+=x.answered;i.correct+=x.correct;i.students++;m[x.key]=i;return m},{})).map(x=>({...x,accuracy:pct(x.correct,x.answered)})).filter(x=>x.students>=2).sort((a,b)=>a.accuracy-b.accuracy).slice(0,8) };
 };
 
-module.exports = { analyze, overview };
+module.exports = { analyze, overview, teacherExamIds };

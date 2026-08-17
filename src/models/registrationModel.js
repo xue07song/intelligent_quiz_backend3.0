@@ -37,7 +37,7 @@ const DESIRED_COLUMNS = [
 ];
 
 const findById = async (id) => {
-    const cols = await safeSelectColumns(DESIRED_COLUMNS);
+    const cols = await safeSelectColumns([...DESIRED_COLUMNS, 'password']);
     const [rows] = await pool.query(`SELECT ${cols} FROM ${TABLE} WHERE id = ?`, [id]);
     return rows[0] || null;
 };

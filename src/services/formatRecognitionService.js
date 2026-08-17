@@ -1,7 +1,6 @@
 const axios = require('axios');
 const questionService = require('./questionService');
-const studentQuestionModel = require('../models/studentQuestionModel');
-const userModel = require('../models/userModel');
+const { normalizeDifficultyLevel } = require('../utils/difficulty');
 
 const GLM_VISION_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 const GLM_VISION_MODEL = process.env.GLM_VISION_MODEL || 'glm-4v-flash';
@@ -21,17 +20,6 @@ const TYPE_NAME_TO_ID = {
     '简答题': 5,
     '程序论述题': 6,
     '论述题': 6,
-};
-
-const DIFFICULTY_NAME_TO_LEVEL = {
-    '入门': '1',
-    '简单': '2',
-    '容易': '2',
-    '中等': '3',
-    '一般': '3',
-    '困难': '4',
-    '较难': '4',
-    '挑战': '5',
 };
 
 const SYSTEM_PROMPT = `你是智能题库的图片识别助手。用户会发送一张包含题目的图片，你需要识别图片中的全部题目，并把每道题转换为系统题库格式。只返回 JSON，不要输出任何其他文字。
@@ -76,10 +64,8 @@ const extractJSON = (text) => {
 const normalizeDifficulty = (value) => {
     if (value === undefined || value === null || value === '') return '';
     const s = String(value).trim();
-    if (/^[1-5]$/.test(s)) return s;
-    const star = s.match(/^(\d)\s*星?$/);
-    if (star) return star[1];
-    return DIFFICULTY_NAME_TO_LEVEL[s] || s;
+    const level = normalizeDifficultyLevel(s);
+    return level ? String(level) : s;
 };
 
 const normalizeQuestion = (raw, index) => {
@@ -135,11 +121,15 @@ const recognizeImage = async ({ buffer, mimetype }) => {
 
     const apiKey = process.env.GLM_API_KEY;
     const mockMode = process.env.FORMAT_RECOGNITION_MOCK === 'true';
-    if (mockMode || !apiKey || apiKey.includes('请填写')) {
+    if (mockMode) {
         return {
             questions: mockRecognizeResult().questions.map(normalizeQuestion),
             rawText: mockRecognizeResult().rawText,
+            isMock: true,
         };
+    }
+    if (!apiKey || apiKey.includes('请填写')) {
+        throw makeError('图片识别服务未配置：请在 .env 中填写 GLM_API_KEY 后再使用图片识别', 503, 50301);
     }
 
     const imageDataUrl = `data:${mimetype};base64,${buffer.toString('base64')}`;
@@ -206,42 +196,4 @@ const importQuestions = async ({ items, subject, actor }) => {
     return questionService.batchImport(normalized, { subject }, actor);
 };
 
-const importStudentQuestions = async ({ items, actor }) => {
-    if (!Array.isArray(items) || items.length === 0) {
-        throw makeError('导入题目不能为空', 400, 40001);
-    }
-    const user = await userModel.findById(actor.id);
-    const college = user && user.college ? String(user.college).trim() : null;
-    const errors = [];
-    let inserted = 0;
-
-    for (let index = 0; index < items.length; index += 1) {
-        try {
-            const normalized = normalizeQuestion(items[index], index);
-            await studentQuestionModel.create({
-                owner_id: actor.id,
-                college: college || null,
-                章节: normalized.章节,
-                题型: normalized.题型,
-                序号: normalized.序号,
-                题目: normalized.题目,
-                选项: normalized.选项,
-                答案: normalized.答案,
-                解析: normalized.解析,
-                难度: normalized.难度,
-                知识点: normalized.知识点,
-                科目: normalized.科目,
-                source: 'image',
-                is_public: 0,
-                review_status: 'private',
-            });
-            inserted += 1;
-        } catch (err) {
-            errors.push({ row: index + 1, reason: err.message || '导入失败' });
-        }
-    }
-
-    return { total: items.length, inserted, skipped: 0, invalid: errors.length, errors };
-};
-
-module.exports = { recognizeImage, importQuestions, importStudentQuestions };
+module.exports = { recognizeImage, importQuestions };

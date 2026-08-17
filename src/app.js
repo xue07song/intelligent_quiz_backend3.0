@@ -4,6 +4,7 @@ const path = require('path');
 const routes = require('./routes');
 const studentRoutes = require('./routes/student');
 const errorHandler = require('./middlewares/errorHandler');
+const { ensureCompatibleSchema } = require('./config/schemaCompatibility');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -49,61 +50,45 @@ const ensureSchema = async () => {
             UNIQUE KEY uk_registration_username (username)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS \`student_questions\` (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            owner_id INT NOT NULL,
-            college VARCHAR(50) DEFAULT NULL,
-            章节 INT DEFAULT 0,
-            题型 INT DEFAULT 2,
-            序号 INT DEFAULT 0,
-            题目 TEXT NOT NULL,
-            选项 TEXT NULL,
-            答案 VARCHAR(255) NULL,
-            解析 TEXT NULL,
-            难度 VARCHAR(10) NULL,
-            知识点 VARCHAR(255) NULL,
-            科目 VARCHAR(50) NULL,
-            source VARCHAR(20) NOT NULL DEFAULT 'manual',
-            is_public TINYINT NOT NULL DEFAULT 0,
-            review_status ENUM('private','pending','approved','rejected') NOT NULL DEFAULT 'private',
-            reject_reason VARCHAR(255) NULL,
-            reviewed_by INT NULL,
-            reviewed_at TIMESTAMP NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_owner (owner_id),
-            INDEX idx_college_status (college, review_status),
-            INDEX idx_review (review_status)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS \`student_moderators\` (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT NOT NULL,
-            college VARCHAR(50) NOT NULL,
-            created_by INT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_user_college (user_id, college),
-            INDEX idx_college (college)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
 };
 
-ensureSchema()
-    .then(() => {
-        app.listen(port, () => {
-            console.log(`🚀 智能题库后端服务已启动！`);
-            console.log(`📍 监听地址: http://localhost:${port}`);
-            console.log(`🔌 API 前缀: http://localhost:${port}/api/v1`);
-            console.log(`🖥️ 前端页面: http://localhost:${port}`);
-            console.log(`📋 测试接口示例: GET http://localhost:${port}/api/v1/questions`);
-            console.log(`💓 健康检查: GET http://localhost:${port}/health`);
-        });
-    })
-    .catch((err) => {
-        console.error('❌ 数据库初始化失败:', err.message);
-        process.exit(1);
+const start = async () => {
+    await ensureSchema();
+    await ensureCompatibleSchema();
+    warnDeployment();
+    return app.listen(port, () => {
+        console.log(`🚀 智能题库后端服务已启动！`);
+        console.log(`📍 监听地址: http://localhost:${port}`);
+        console.log(`🔌 API 前缀: http://localhost:${port}/api/v1`);
+        console.log(`🖥️ 前端页面: http://localhost:${port}`);
+        console.log(`📋 测试接口示例: GET http://localhost:${port}/api/v1/questions`);
+        console.log(`💓 健康检查: GET http://localhost:${port}/health`);
     });
+};
+
+const warnDeployment = () => {
+    const jwtSecret = process.env.JWT_SECRET || '';
+    if (!jwtSecret || jwtSecret === 'dev-secret-change-me' || jwtSecret.includes('请替换')) {
+        console.warn('⚠️ JWT_SECRET 未设置或仍为默认值，请上线前替换为随机字符串');
+    }
+    const dbPass = process.env.DB_PASS || '';
+    if (['123456', 'root', 'password'].includes(dbPass)) {
+        console.warn('⚠️ 数据库口令过弱，请上线前修改并改用环境变量注入');
+    }
+    for (const key of ['GLM_API_KEY', 'DEEPSEEK_API_KEY']) {
+        const value = process.env[key] || '';
+        if (!value || value.includes('请填写') || value.includes('your_key')) {
+            console.warn(`⚠️ ${key} 未配置或仍为占位值`);
+        }
+    }
+};
+
+if (require.main === module) {
+    start().catch((err) => {
+        console.error('数据库初始化失败:', err.message);
+        process.exitCode = 1;
+    });
+}
 
 module.exports = app;
+module.exports.start = start;

@@ -5,11 +5,8 @@ const QT_TABLE = '`题库1`';
 const findProfile = async (userId) => {
     const [rows] = await pool.query(
         `SELECT u.id, u.username, u.nickname, u.role, u.created_at, u.email, u.phone, u.school, u.college,
-                u.student_no, u.employee_no, u.major, u.grade, u.title,
-                c.id AS class_id, c.name AS class_name, c.college AS class_college, c.major AS class_major, c.grade AS class_grade
+                u.student_no, u.employee_no, u.major, u.grade, u.title
          FROM \`users\` u
-         LEFT JOIN student_classes sc ON sc.student_id = u.id
-         LEFT JOIN classes c ON c.id = sc.class_id
          WHERE u.id = ?`,
         [userId]
     );
@@ -30,11 +27,14 @@ const countHistoryQuestions = async (userId) => {
 const findHistoryQuestions = async (userId, { page, size }) => {
     const offset = (page - 1) * size;
     const [rows] = await pool.query(
-        `SELECT a.question_id AS questionId, q.题目 AS title, q.题型 AS questionType,
+        `SELECT a.question_id AS questionId,
+                COALESCE(eq.snapshot_题目, q.题目) AS title,
+                COALESCE(eq.snapshot_题型, q.题型) AS questionType,
                 a.user_answer AS userAnswer, a.correct_answer AS correctAnswer,
                 a.is_correct AS isCorrect, r.submitted_at AS answeredAt
          FROM \`exam_answers\` a
          INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         LEFT JOIN \`exam_questions\` eq ON eq.exam_id = r.exam_id AND eq.question_id = a.question_id
          LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
          WHERE r.user_id = ?
          ORDER BY r.submitted_at DESC, a.id DESC

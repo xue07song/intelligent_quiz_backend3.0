@@ -19,28 +19,28 @@ const typeName = (type) => TYPE_NAMES[Number(type)] || `题型${type}`;
 
 const splitLines = (text) => String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 
-const buildDocxFromQuestions = (meta, questions, withAnswers) => {
+const buildDocx = (exam, withAnswers) => {
     const children = [];
 
     children.push(new Paragraph({
-        text: meta.title || '练习试卷',
+        text: exam.title || '练习试卷',
         bold: true,
         size: 32,
         alignment: AlignmentType.CENTER,
         spacing: { after: 200 },
     }));
     children.push(new Paragraph({
-        text: `科目：${meta.subject || '不限'}    题数：${meta.totalCount || questions.length}    客观题：${meta.objectiveCount || 0}`,
+        text: `科目：${exam.subject || '不限'}    题数：${exam.total_count || exam.questions.length}    客观题：${exam.objective_count || 0}`,
         alignment: AlignmentType.CENTER,
         spacing: { after: 100 },
     }));
     children.push(new Paragraph({
-        text: `创建人：${meta.creatorName || '系统'}    创建时间：${formatDate(meta.createdAt)}`,
+        text: `创建人：${exam.creator_name || '系统'}    创建时间：${formatDate(exam.created_at)}`,
         alignment: AlignmentType.CENTER,
         spacing: { after: 300 },
     }));
 
-    questions.forEach((q, index) => {
+    exam.questions.forEach((q, index) => {
         children.push(new Paragraph({
             children: [new TextRun({ text: `${index + 1}. ${q.题目}`, bold: true })],
             spacing: { before: 160, after: 80 },
@@ -68,7 +68,7 @@ const buildDocxFromQuestions = (meta, questions, withAnswers) => {
             alignment: AlignmentType.CENTER,
             spacing: { after: 200 },
         }));
-        questions.forEach((q, index) => {
+        exam.questions.forEach((q, index) => {
             children.push(new Paragraph({
                 children: [new TextRun({ text: `${index + 1}. 答案：${q.答案 || '略'}`, bold: true })],
                 spacing: { before: 120, after: 60 },
@@ -86,12 +86,12 @@ const buildDocxFromQuestions = (meta, questions, withAnswers) => {
     return new Document({ sections: [{ children }] });
 };
 
-const buildExcelFromQuestions = (questions, withAnswers) => {
+const buildExcel = (exam, withAnswers) => {
     const headers = ['序号', 'ID', '题型', '题目', '选项'];
     if (withAnswers) headers.push('答案', '解析');
     headers.push('难度', '知识点');
 
-    const rows = questions.map((q, index) => {
+    const rows = exam.questions.map((q, index) => {
         const row = [
             index + 1,
             q.id,
@@ -121,11 +121,6 @@ const buildExcelFromQuestions = (questions, withAnswers) => {
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 };
 
-const buildDocxBuffer = async (meta, questions, withAnswers) => {
-    const doc = buildDocxFromQuestions(meta, questions, withAnswers);
-    return Packer.toBuffer(doc);
-};
-
 const exportExam = async ({ examId, actor, format = 'docx', withAnswers = false }) => {
     const exam = await practiceService.getExam(examId, actor.id, actor.role);
     const normalizedFormat = format === 'xlsx' ? 'xlsx' : 'docx';
@@ -134,20 +129,14 @@ const exportExam = async ({ examId, actor, format = 'docx', withAnswers = false 
 
     if (normalizedFormat === 'xlsx') {
         return {
-            buffer: buildExcelFromQuestions(exam.questions, withAnswers),
+            buffer: buildExcel(exam, withAnswers),
             mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             filename: `${baseName}_${answerLabel}.xlsx`,
         };
     }
 
-    const buffer = await buildDocxBuffer({
-        title: exam.title,
-        subject: exam.subject,
-        totalCount: exam.total_count,
-        objectiveCount: exam.objective_count,
-        creatorName: exam.creator_name,
-        createdAt: exam.created_at,
-    }, exam.questions, withAnswers);
+    const doc = buildDocx(exam, withAnswers);
+    const buffer = await Packer.toBuffer(doc);
     return {
         buffer,
         mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -155,4 +144,4 @@ const exportExam = async ({ examId, actor, format = 'docx', withAnswers = false 
     };
 };
 
-module.exports = { exportExam, buildDocxBuffer, buildExcelFromQuestions, cleanFilename };
+module.exports = { exportExam };

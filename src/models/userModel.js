@@ -1,8 +1,40 @@
 const pool = require('../config/db');
 
 const TABLE = '`users`';
-// 默认不返回密码字段
-const COLUMNS = 'id, username, role, nickname, email, phone, school, college, student_no, employee_no, major, grade, title, status, created_at, updated_at';
+
+// 期望 SELECT 的列（class_id 为新列，旧库可能没有，必须安全跳过）
+const DESIRED_COLUMNS = [
+    'id', 'username', 'role', 'nickname', 'email', 'phone', 'school', 'college',
+    'student_no', 'employee_no', 'major', 'grade', 'title', 'class_id',
+    'status', 'created_at', 'updated_at'
+];
+
+// 用户表列自探测缓存（避免每次 SQL 都查 information_schema）
+let cachedColumns = null;
+const getActualColumns = async () => {
+    if (cachedColumns) return cachedColumns;
+    try {
+        const [rows] = await pool.query(
+            `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
+        );
+        cachedColumns = new Set(rows.map(r => r.COLUMN_NAME));
+    } catch {
+        cachedColumns = new Set();
+    }
+    return cachedColumns;
+};
+
+// 安全 SELECT 列：存在则直接写 `col`，不存在则返回 `NULL AS col` 占位
+const safeSelectColumns = async (desired) => {
+    const actual = await getActualColumns();
+    return desired.map(col => {
+        return actual.has(col) ? `\`${col}\`` : `NULL AS \`${col}\``;
+    }).join(', ');
+};
+
+// 动态生成不包含密码字段的 SELECT 列（安全版，class_id 缺失时返回 NULL）
+const getSafeColumns = async () => safeSelectColumns(DESIRED_COLUMNS);
 
 const findByUsername = async (username) => {
     const [rows] = await pool.query(`SELECT * FROM ${TABLE} WHERE username = ?`, [username]);
@@ -10,8 +42,30 @@ const findByUsername = async (username) => {
 };
 
 const findById = async (id) => {
-    const [rows] = await pool.query(`SELECT ${COLUMNS} FROM ${TABLE} WHERE id = ?`, [id]);
-    return rows[0] || null;
+    const cols = await getSafeColumns();
+    const [rows] = await pool.query(`SELECT ${cols} FROM ${TABLE} WHERE id = ?`, [id]);
+    const user = rows[0] || null;
+    if (user && user.role === 'student') {
+        // 查询全部必修班（多选）
+        const [clsRows] = await pool.query(
+            `SELECT c.id AS class_id, c.name AS class_name
+             FROM student_classes sc
+             INNER JOIN classes c ON c.id = sc.class_id
+             WHERE sc.student_id = ? AND sc.type = 'compulsory'
+             ORDER BY sc.created_at ASC`,
+            [id]
+        );
+        const classIds = clsRows.map(r => r.class_id);
+        const classNames = clsRows.map(r => r.class_name);
+        user.classIds = classIds;
+        user.classNames = classNames;
+        // className / class_name：多选时用「/」拼接，兼容前端只显示单值
+        user.className = classNames.length > 0 ? classNames.join('/') : null;
+        user.class_name = user.className;
+        // classId：返回第一个（保留兼容）
+        user.classId = classIds[0] ?? user.class_id ?? null;
+    }
+    return user;
 };
 
 // 按 id 查询（含 password 字段，用于改密码校验）
@@ -44,8 +98,9 @@ const findAll = async ({ page = 1, pageSize = 20, role, keyword, status } = {}) 
     const total = countRows[0].total;
 
     const offset = (page - 1) * pageSize;
+    const cols = await getSafeColumns();
     const [rows] = await pool.query(
-        `SELECT ${COLUMNS} FROM ${TABLE} ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
+        `SELECT ${cols} FROM ${TABLE} ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
         [...params, pageSize, offset]
     );
 
@@ -71,35 +126,49 @@ const findAll = async ({ page = 1, pageSize = 20, role, keyword, status } = {}) 
         }
     }
 
-    // 若结果中含学生，批量查询其班级并组装（避免 N+1）
+    // 若结果中含学生，批量查询其全部必修班（多选）并组装（避免 N+1）
     const studentIds = rows.filter((r) => r.role === 'student').map((r) => r.id);
     if (studentIds.length > 0) {
         const placeholders = studentIds.map(() => '?').join(', ');
+        // 从 student_classes 表查全部 compulsory 关系（多选）
         const [clsRows] = await pool.query(
-            `SELECT sc.student_id, c.id AS class_id, c.name AS class_name, c.college AS class_college, c.major AS class_major, c.grade AS class_grade
+            `SELECT sc.student_id, c.id AS class_id, c.name AS class_name,
+                    c.college AS class_college, c.major AS class_major, c.grade AS class_grade
              FROM student_classes sc
              INNER JOIN classes c ON c.id = sc.class_id
-             WHERE sc.student_id IN (${placeholders})`,
+             WHERE sc.type = 'compulsory' AND sc.student_id IN (${placeholders})
+             ORDER BY sc.student_id, sc.created_at ASC`,
             studentIds
         );
-        const classMap = {};
+        // 每个学生可能有多个必修班，用数组聚合
+        const multiClassMap = {};
         for (const c of clsRows) {
-            classMap[c.student_id] = {
+            if (!multiClassMap[c.student_id]) multiClassMap[c.student_id] = [];
+            multiClassMap[c.student_id].push({
                 classId: c.class_id, className: c.class_name,
                 classCollege: c.class_college, classMajor: c.class_major, classGrade: c.class_grade
-            };
+            });
         }
         for (const r of rows) {
             if (r.role === 'student') {
-                const c = classMap[r.id];
-                r.classId = c ? c.classId : null;
-                r.className = c ? c.className : null;
-                r.classCollege = c ? c.classCollege : null;
-                r.classMajor = c ? c.classMajor : null;
-                r.classGrade = c ? c.classGrade : null;
+                const classes = multiClassMap[r.id] || [];
+                const classIds = classes.map(c => c.classId);
+                const classNames = classes.map(c => c.className);
+                r.classIds = classIds;
+                r.classNames = classNames;
+                // className / class_name：多选时用「/」拼接，兼容前端单值显示
+                r.className = classNames.length > 0 ? classNames.join('/') : null;
+                r.class_name = r.className;
+                // classId / classCollege / classMajor / classGrade：返回第一个（保留兼容）
+                const first = classes[0];
+                r.classId = first ? first.classId : (r.class_id || null);
+                r.classCollege = first ? first.classCollege : null;
+                r.classMajor = first ? first.classMajor : null;
+                r.classGrade = first ? first.classGrade : null;
             } else {
                 r.classId = null;
                 r.className = null;
+                r.class_name = null;
                 r.classCollege = null;
                 r.classMajor = null;
                 r.classGrade = null;
@@ -109,6 +178,9 @@ const findAll = async ({ page = 1, pageSize = 20, role, keyword, status } = {}) 
         for (const r of rows) {
             r.classId = null;
             r.className = null;
+            r.class_name = null;
+            r.classIds = [];
+            r.classNames = [];
             r.classCollege = null;
             r.classMajor = null;
             r.classGrade = null;
@@ -119,16 +191,41 @@ const findAll = async ({ page = 1, pageSize = 20, role, keyword, status } = {}) 
 };
 
 const create = async (data) => {
+    const actual = await getActualColumns();
+    const insertFields = [
+        { col: 'username', key: 'username' },
+        { col: 'password', key: 'password' },
+        { col: 'role', key: 'role' },
+        { col: 'nickname', key: 'nickname' },
+        { col: 'email', key: 'email' },
+        { col: 'phone', key: 'phone' },
+        { col: 'school', key: 'school' },
+        { col: 'college', key: 'college' },
+        { col: 'student_no', key: 'student_no' },
+        { col: 'employee_no', key: 'employee_no' },
+        { col: 'major', key: 'major' },
+        { col: 'grade', key: 'grade' },
+        { col: 'title', key: 'title' },
+        { col: 'class_id', key: 'class_id' },
+        { col: 'status', key: 'status' },
+    ];
+    const cols = [];
+    const placeholders = [];
+    const values = [];
+    for (const { col, key } of insertFields) {
+        if (actual.has(col)) {
+            cols.push(`\`${col}\``);
+            placeholders.push('?');
+            if (key === 'status') {
+                values.push(data.status ?? 1);
+            } else {
+                values.push(data[key] ?? null);
+            }
+        }
+    }
     const [result] = await pool.query(
-        `INSERT INTO ${TABLE}
-         (username, password, role, nickname, email, phone, school, college, student_no, employee_no, major, grade, title, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-            data.username, data.password, data.role, data.nickname ?? null,
-            data.email ?? null, data.phone ?? null, data.school ?? null, data.college ?? null,
-            data.student_no ?? null, data.employee_no ?? null, data.major ?? null,
-            data.grade ?? null, data.title ?? null, data.status ?? 1
-        ]
+        `INSERT INTO ${TABLE} (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`,
+        values
     );
     return result;
 };
@@ -136,10 +233,12 @@ const create = async (data) => {
 const update = async (id, data) => {
     const fields = [];
     const params = [];
-    const allowedFields = ['role', 'nickname', 'email', 'phone', 'school', 'college', 'student_no', 'employee_no', 'major', 'grade', 'title', 'status'];
+    const actual = await getActualColumns();
+    const allowedFields = ['role', 'nickname', 'email', 'phone', 'school', 'college', 'student_no', 'employee_no', 'major', 'grade', 'title', 'class_id', 'status'];
 
     for (const field of allowedFields) {
-        if (data[field] !== undefined) {
+        // class_id 只在表实际有这一列时才允许写入，避免旧库炸 1054
+        if (data[field] !== undefined && (field !== 'class_id' || actual.has('class_id'))) {
             fields.push(`${field} = ?`);
             params.push(data[field]);
         }

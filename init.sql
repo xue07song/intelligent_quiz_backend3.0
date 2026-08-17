@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   major VARCHAR(50) DEFAULT NULL COMMENT '专业',
   grade VARCHAR(20) DEFAULT NULL COMMENT '年级，如 2024级',
   title VARCHAR(50) DEFAULT NULL COMMENT '职称（教师用），如 讲师/副教授/教授',
+  class_id INT DEFAULT NULL COMMENT '主必修班ID（冗余字段，快速查询用；实际归属以 student_classes 为准）',
   status TINYINT NOT NULL DEFAULT 1 COMMENT '账号状态：1启用 0禁用',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
@@ -234,60 +235,47 @@ CREATE TABLE IF NOT EXISTS `classes` (
   grade VARCHAR(20) DEFAULT NULL COMMENT '年级（可选）',
   college VARCHAR(100) DEFAULT NULL COMMENT '所属学院',
   major VARCHAR(50) DEFAULT NULL COMMENT '所属专业',
+  type ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '班级类型：compulsory必修 elective选修',
   remark VARCHAR(255) DEFAULT NULL COMMENT '备注',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   UNIQUE KEY uk_name (name),
   INDEX idx_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='班级表';
 
--- 学生-班级关联表（一个学生只属于一个班级）
+-- 学生-班级关联表（多对多：一个学生可同时属于必修班和多个选修班）
 CREATE TABLE IF NOT EXISTS `student_classes` (
   id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
   student_id INT NOT NULL COMMENT '学生用户ID（users.id，role=student）',
   class_id INT NOT NULL COMMENT '班级ID（classes.id）',
+  type ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '关系类型：compulsory必修 elective选修',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '分班时间',
-  UNIQUE KEY uk_student (student_id),
+  UNIQUE KEY uk_student_class (student_id, class_id),
   INDEX idx_class (class_id),
+  INDEX idx_student (student_id),
+  INDEX idx_type (type),
   CONSTRAINT fk_sc_class FOREIGN KEY (class_id) REFERENCES `classes`(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生班级关联表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生班级关联表（多对多）';
 
--- ==================== 学生题库与社区模块表 ====================
+-- ==================== 兼容旧库的迁移语句（幂等，可安全重复执行）====================
 
--- 学生题库表（与学生社区共享，独立于教师题库）
-CREATE TABLE IF NOT EXISTS `student_questions` (
-  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '题目ID',
-  owner_id INT NOT NULL COMMENT '所属学生用户ID',
-  college VARCHAR(50) DEFAULT NULL COMMENT '提交时的学院（社区可见范围）',
-  章节 INT DEFAULT 0 COMMENT '题目所属章节编号',
-  题型 INT DEFAULT 2 COMMENT '题型：1判断 2单选 3多选 4填空 5简答 6程序论述',
-  序号 INT DEFAULT 0 COMMENT '题目排序',
-  题目 TEXT NOT NULL COMMENT '题干内容',
-  选项 TEXT COMMENT '选项内容',
-  答案 VARCHAR(255) COMMENT '正确答案',
-  解析 TEXT COMMENT '答案解析',
-  难度 VARCHAR(10) COMMENT '难度标识 1-5',
-  知识点 VARCHAR(255) COMMENT '关联知识点',
-  科目 VARCHAR(50) DEFAULT NULL COMMENT '所属科目',
-  source VARCHAR(20) NOT NULL DEFAULT 'manual' COMMENT '来源：manual手工 image图片识别',
-  is_public TINYINT NOT NULL DEFAULT 0 COMMENT '是否公开到同学院社区',
-  review_status ENUM('private','pending','approved','rejected') NOT NULL DEFAULT 'private' COMMENT '审核状态',
-  reject_reason VARCHAR(255) DEFAULT NULL COMMENT '拒绝原因',
-  reviewed_by INT DEFAULT NULL COMMENT '审核人用户ID',
-  reviewed_at TIMESTAMP NULL DEFAULT NULL COMMENT '审核时间',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  INDEX idx_owner (owner_id),
-  INDEX idx_college_status (college, review_status),
-  INDEX idx_review (review_status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生题库表';
+-- classes 表加 type 字段
+ALTER TABLE `classes` ADD COLUMN IF NOT EXISTS `type` ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '班级类型：compulsory必修 elective选修';
 
--- 学生版主表（按学院审核社区题目）
-CREATE TABLE IF NOT EXISTS `student_moderators` (
-  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
-  user_id INT NOT NULL COMMENT '学生用户ID',
-  college VARCHAR(50) NOT NULL COMMENT '负责审核的学院',
-  created_by INT DEFAULT NULL COMMENT '创建人（管理员）',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  UNIQUE KEY uk_user_college (user_id, college),
-  INDEX idx_college (college)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生版主表（按学院）';
+-- users 表加 class_id 冗余字段
+ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `class_id` INT DEFAULT NULL COMMENT '主必修班ID（冗余字段，快速查询用；实际归属以 student_classes 为准）';
+
+-- student_classes 表加 type 字段
+ALTER TABLE `student_classes` ADD COLUMN IF NOT EXISTS `type` ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '关系类型：compulsory必修 elective选修';
+
+-- student_classes 表去掉旧的 student_id 唯一约束（改为多对多），加 (student_id, class_id) 唯一约束
+-- 注意：MySQL 8.0 不支持 IF EXISTS 于 DROP INDEX，需要用存储过程或手动执行
+-- 以下为安全迁移：先检查并删除旧约束，再添加新约束
+SET @old_index_exists = (SELECT COUNT(*) FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_classes' AND INDEX_NAME = 'uk_student');
+SET @sql = IF(@old_index_exists > 0, 'ALTER TABLE `student_classes` DROP INDEX `uk_student`', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @new_index_exists = (SELECT COUNT(*) FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_classes' AND INDEX_NAME = 'uk_student_class');
+SET @sql = IF(@new_index_exists = 0, 'ALTER TABLE `student_classes` ADD UNIQUE KEY `uk_student_class` (`student_id`, `class_id`)', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
