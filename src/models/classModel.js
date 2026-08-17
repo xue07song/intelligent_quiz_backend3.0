@@ -12,8 +12,12 @@ const findAll = async ({ keyword } = {}) => {
         params.push(kw, kw, kw);
     }
     const [rows] = await pool.query(
-        `SELECT c.*, (SELECT COUNT(*) FROM student_classes sc WHERE sc.class_id = c.id) AS student_count
+        `SELECT c.*, co.nickname counselor_name, co.employee_no counselor_employee_no,
+                ht.nickname head_teacher_name, ht.employee_no head_teacher_employee_no,
+                (SELECT COUNT(*) FROM student_classes sc WHERE sc.class_id = c.id) AS student_count
          FROM classes c
+         LEFT JOIN users co ON co.id = c.counselor_id
+         LEFT JOIN users ht ON ht.id = c.head_teacher_id
          ${where}
          ORDER BY c.id ASC`,
         params
@@ -35,21 +39,28 @@ const findByName = async (name) => {
     return rows[0] || null;
 };
 
-const create = async ({ name, grade, remark, type }) => {
+const create = async ({ name, grade, remark, type, college, major, capacity, counselorId, headTeacherId }) => {
     const [result] = await pool.query(
-        'INSERT INTO classes (name, grade, remark, type) VALUES (?, ?, ?, ?)',
-        [String(name).trim(), grade || null, remark || null, type || 'compulsory']
+        `INSERT INTO classes (name, grade, remark, type, college, major, capacity, counselor_id, head_teacher_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [String(name).trim(), grade || null, remark || null, type || 'compulsory', college || null,
+            major || null, Math.max(1, Number(capacity) || 50), counselorId || null, headTeacherId || null]
     );
     return result;
 };
 
-const update = async (id, { name, grade, remark, type }) => {
+const update = async (id, { name, grade, remark, type, college, major, capacity, counselorId, headTeacherId }) => {
     const fields = [];
     const params = [];
     if (name !== undefined) { fields.push('name = ?'); params.push(String(name).trim()); }
     if (grade !== undefined) { fields.push('grade = ?'); params.push(grade || null); }
     if (remark !== undefined) { fields.push('remark = ?'); params.push(remark || null); }
     if (type !== undefined) { fields.push('type = ?'); params.push(type); }
+    if (college !== undefined) { fields.push('college = ?'); params.push(college || null); }
+    if (major !== undefined) { fields.push('major = ?'); params.push(major || null); }
+    if (capacity !== undefined) { fields.push('capacity = ?'); params.push(Math.max(1, Number(capacity) || 50)); }
+    if (counselorId !== undefined) { fields.push('counselor_id = ?'); params.push(counselorId || null); }
+    if (headTeacherId !== undefined) { fields.push('head_teacher_id = ?'); params.push(headTeacherId || null); }
     if (fields.length === 0) return { affectedRows: 0 };
     params.push(id);
     const [result] = await pool.query(`UPDATE classes SET ${fields.join(', ')} WHERE id = ?`, params);
@@ -172,6 +183,25 @@ const findAvailableStudents = async ({ page = 1, pageSize = 50, keyword } = {}) 
 
     return { rows, total };
 };
+
+const findTeachers = async (keyword = '') => {
+    const kw = `%${String(keyword).trim()}%`;
+    const [rows] = await pool.query(
+        `SELECT id, username, nickname, employee_no, college, major
+         FROM users WHERE role='teacher'
+           AND (? = '%%' OR username LIKE ? OR nickname LIKE ? OR employee_no LIKE ?)
+         ORDER BY nickname, username LIMIT 100`, [kw, kw, kw, kw]
+    );
+    return rows;
+};
+
+const findAcademicStructure = async () => {
+    const [colleges] = await pool.query('SELECT id, name FROM academic_colleges ORDER BY name');
+    const [majors] = await pool.query('SELECT id, college_id collegeId, name FROM academic_majors ORDER BY name');
+    return colleges.map((college) => ({ ...college, majors: majors.filter((m) => Number(m.collegeId) === Number(college.id)) }));
+};
+const createCollege = async (name) => pool.query('INSERT INTO academic_colleges (name) VALUES (?)', [String(name).trim()]);
+const createMajor = async (collegeId, name) => pool.query('INSERT INTO academic_majors (college_id, name) VALUES (?, ?)', [collegeId, String(name).trim()]);
 
 // 把学生加入某班级（幂等：已在同班则跳过，不影响其他班级关系）
 const assignStudentsToClass = async (classId, studentIds, type = 'compulsory') => {
@@ -399,6 +429,10 @@ module.exports = {
     findAllClassesByStudentIds,
     findStudentsByClassId,
     findAvailableStudents,
+    findTeachers,
+    findAcademicStructure,
+    createCollege,
+    createMajor,
     assignStudentsToClass,
     removeStudentsFromClass,
     clearByStudent,

@@ -112,6 +112,14 @@ const unassigned = async (req, res, next) => {
     }
 };
 
+const teachers = async (req, res, next) => {
+    try { res.json(success(await classService.listTeachers(req.query.keyword))); }
+    catch (err) { next(err); }
+};
+const structure = async (req, res, next) => { try { res.json(success(await classService.getAcademicStructure())); } catch (err) { next(err); } };
+const addCollege = async (req, res, next) => { try { res.status(201).json(success(await classService.addCollege(req.body.name), '学院创建成功')); } catch (err) { next(err); } };
+const addMajor = async (req, res, next) => { try { res.status(201).json(success(await classService.addMajor(req.body.collegeId, req.body.name), '专业创建成功')); } catch (err) { next(err); } };
+
 module.exports = {
-    list, detail, create, update, remove, assignStudents, removeStudents, unassigned, transfer,
+    list, detail, create, update, remove, assignStudents, removeStudents, unassigned, transfer, teachers, structure, addCollege, addMajor,
 };

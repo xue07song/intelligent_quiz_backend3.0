@@ -238,7 +238,7 @@ const adminGetAllStats = async (req, res, next) => {
 // 试卷维度分析（每题正确率 + 学生成绩 + 整体统计 + 班级对比 + 分数段）
 const examAnalytics = async (req, res, next) => {
     try {
-        const result = await practiceService.getExamAnalytics(req.user, req.params.id);
+        const result = await practiceService.getExamAnalytics(req.user, req.params.id, req.query.classId);
         res.json(success(result));
     } catch (err) {
         next(err);

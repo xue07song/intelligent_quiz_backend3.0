@@ -67,10 +67,14 @@ const analyze = async (userId) => {
 
 const overview = async () => {
     const students = await model.getStudents();
+    const classes = await model.getClasses();
     const analyses = await Promise.all(students.map(student => analyze(student.id)));
-    return { generatedAt:new Date(), students:analyses.map(a=>{const examAccuracy=pct(a.coverage.examCorrect||0,a.coverage.examAnswers),adaptiveAccuracy=pct(a.coverage.adaptiveCorrect||0,a.coverage.adaptiveAnswers);const concernReasons=[];if(a.coverage.examAnswers&&examAccuracy<60)concernReasons.push(`普通试卷正确率${examAccuracy}%`);if(a.coverage.adaptiveAnswers&&adaptiveAccuracy<60)concernReasons.push(`自适应练习正确率${adaptiveAccuracy}%`);return ({ ...a.student, ...a.summary, coverage:a.coverage,examAccuracy,adaptiveAccuracy,concernReasons,
+    const aggregateWeaknesses = list => Object.values(list.flatMap(a=>a.knowledge).reduce((m,x)=>{const i=m[x.key]||={key:x.key,answered:0,correct:0,students:0};i.answered+=x.answered;i.correct+=x.correct;i.students++;m[x.key]=i;return m},{})).map(x=>({...x,accuracy:pct(x.correct,x.answered)})).filter(x=>x.students>=2).sort((a,b)=>a.accuracy-b.accuracy).slice(0,8);
+    const classWeaknesses = {};
+    classes.forEach(c => { classWeaknesses[c.name] = aggregateWeaknesses(analyses.filter(a => a.student.className === c.name)); });
+    return { generatedAt:new Date(), classes:classes.map(c=>({id:c.id,name:c.name,studentCount:Number(c.studentCount||0)})), students:analyses.map(a=>{const examAccuracy=pct(a.coverage.examCorrect||0,a.coverage.examAnswers),adaptiveAccuracy=pct(a.coverage.adaptiveCorrect||0,a.coverage.adaptiveAnswers);const concernReasons=[];if(a.coverage.examAnswers&&examAccuracy<60)concernReasons.push(`普通试卷正确率${examAccuracy}%`);if(a.coverage.adaptiveAnswers&&adaptiveAccuracy<60)concernReasons.push(`自适应练习正确率${adaptiveAccuracy}%`);return ({ ...a.student, ...a.summary, coverage:a.coverage,examAccuracy,adaptiveAccuracy,concernReasons,
         status:concernReasons.length?'需要关注':a.summary.answered<5?'数据积累中':a.summary.change>=10?'近期进步':a.summary.change<=-10?'近期波动':'表现稳定' });}),
-        commonWeaknesses:Object.values(analyses.flatMap(a=>a.knowledge).reduce((m,x)=>{const i=m[x.key]||={key:x.key,answered:0,correct:0,students:0};i.answered+=x.answered;i.correct+=x.correct;i.students++;m[x.key]=i;return m},{})).map(x=>({...x,accuracy:pct(x.correct,x.answered)})).filter(x=>x.students>=2).sort((a,b)=>a.accuracy-b.accuracy).slice(0,8) };
+        commonWeaknesses:aggregateWeaknesses(analyses), classWeaknesses };
 };
 
 module.exports = { analyze, overview };

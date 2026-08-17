@@ -66,6 +66,10 @@ const assignStudents = async (classId, studentIds) => {
     if (!Array.isArray(studentIds) || studentIds.length === 0) {
         throw makeError('请选择要添加的学生', 400, 40001);
     }
+    const remaining = Math.max(0, Number(cls.capacity || 50) - Number(cls.student_count || 0));
+    if (studentIds.length > remaining) {
+        throw makeError(`班级容量为 ${cls.capacity || 50} 人，目前还可添加 ${remaining} 人，请减少勾选人数或先修改班级容量`, 409, 40902);
+    }
     // 按班级 type 写入对应关系类型
     const type = cls.type === 'elective' ? 'elective' : 'compulsory';
     return classModel.assignStudentsToClass(classId, studentIds, type);
@@ -86,6 +90,10 @@ const listAvailableStudents = async ({ page = 1, pageSize = 50, keyword } = {}) 
 
 // 兼容旧接口名
 const listUnassignedStudents = listAvailableStudents;
+const listTeachers = async (keyword) => classModel.findTeachers(keyword);
+const getAcademicStructure = async () => classModel.findAcademicStructure();
+const addCollege = async (name) => { if (!String(name || '').trim()) throw makeError('学院名称不能为空', 400, 40001); await classModel.createCollege(name); return getAcademicStructure(); };
+const addMajor = async (collegeId, name) => { if (!collegeId || !String(name || '').trim()) throw makeError('请选择学院并填写专业名称', 400, 40001); await classModel.createMajor(collegeId, name); return getAcademicStructure(); };
 
 module.exports = {
     listClasses,
@@ -97,4 +105,8 @@ module.exports = {
     removeStudents,
     listAvailableStudents,
     listUnassignedStudents,
+    listTeachers,
+    getAcademicStructure,
+    addCollege,
+    addMajor,
 };
