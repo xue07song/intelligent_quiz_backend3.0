@@ -1,9 +1,7 @@
+const { normalizeDifficultyLevel } = require('../utils/difficulty');
+
 const normalizeDifficulty = (value) => {
-    const text = String(value ?? '').trim();
-    if (/^[1-5]$/.test(text)) return Number(text);
-    if (text === '简单') return 2;
-    if (text === '中等') return 3;
-    return null;
+    return normalizeDifficultyLevel(value);
 };
 
 const normalizeDistribution = (input, min, max) => {
@@ -119,6 +117,7 @@ const buildInventory = (rawQuestions) => {
         questions: valid,
         report: {
             total: valid.length,
+            byChapter: countBy(valid, (q) => Number(q.章节) || 0),
             byType: countBy(valid, (q) => q.normalizedType),
             byDifficulty: countBy(valid, (q) => q.normalizedDifficulty),
             cross,

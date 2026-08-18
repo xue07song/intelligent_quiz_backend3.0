@@ -7,9 +7,17 @@ const ALL_TYPES = [1, 2, 3, 4, 5, 6];
 
 const normalizeDifficultySql = `CASE
     WHEN q.难度 REGEXP '^[1-5]$' THEN CAST(q.难度 AS UNSIGNED)
-    WHEN q.难度 = '简单' THEN 2
-    WHEN q.难度 = '中等' THEN 3
-    WHEN q.难度 = '困难' THEN 5
+    WHEN q.难度 REGEXP '^[1-5]星$' THEN CAST(LEFT(q.难度, 1) AS UNSIGNED)
+    WHEN q.难度 = '入门' THEN 1
+    WHEN q.难度 IN ('简单', '容易') THEN 2
+    WHEN q.难度 IN ('一般', '中等') THEN 3
+    WHEN q.难度 IN ('困难', '较难') THEN 4
+    WHEN q.难度 = '挑战' THEN 5
+    WHEN q.难度 = '⭐' THEN 1
+    WHEN q.难度 = '⭐⭐' THEN 2
+    WHEN q.难度 = '⭐⭐⭐' THEN 3
+    WHEN q.难度 = '⭐⭐⭐⭐' THEN 4
+    WHEN q.难度 = '⭐⭐⭐⭐⭐' THEN 5
     ELSE NULL END`;
 
 const ensureTables = async () => {
@@ -92,18 +100,27 @@ const getChapterInventory = async ({ chapters = [], questionTypes = OBJECTIVE_TY
     return rows;
 };
 
-const getOverview = async () => {
+const getOverview = async (examIds = null) => {
     await ensureTables();
+    const examIdsArray = Array.isArray(examIds) && examIds.length > 0 ? examIds : null;
+    if (Array.isArray(examIds) && examIds.length === 0) {
+        return { users: [], recentSessions: [] };
+    }
+    const examScopeClause = examIdsArray
+        ? ` AND u.id IN (SELECT user_id FROM exam_records WHERE exam_id IN (${examIdsArray.map(() => '?').join(', ')}))`
+        : '';
+    const examParams = examIdsArray || [];
     const [users] = await pool.query(
         `SELECT u.id userId, u.username, u.nickname,
           COUNT(CASE WHEN s.answered_count > 0 THEN s.id END) sessionCount,
           COALESCE(SUM(s.answered_count),0) answeredCount,
           COALESCE(SUM(s.correct_count),0) correctCount,
-          COALESCE(ROUND(SUM(s.correct_count)*100/NULLIF(SUM(s.answered_count),0),2),0) accuracy,
+          COALESCE(ROUND(SUM(s.correct_count)*100/NULLIF(SUM(CASE WHEN s.answered_count > 0 THEN s.answered_count END),0),2),0) accuracy,
           COALESCE(MAX(s.current_difficulty),1) highestDifficulty,
           MAX(CASE WHEN s.answered_count > 0 THEN s.updated_at END) lastPracticeAt
          FROM users u LEFT JOIN adaptive_practice_sessions s ON s.user_id=u.id
-         WHERE u.role='student' GROUP BY u.id, u.username, u.nickname ORDER BY lastPracticeAt DESC, u.id`
+         WHERE u.role='student'${examScopeClause} GROUP BY u.id, u.username, u.nickname ORDER BY lastPracticeAt DESC, u.id`,
+        examParams
     );
     const [sessions] = await pool.query(
         `SELECT s.*, u.username, u.nickname FROM adaptive_practice_sessions s
@@ -128,15 +145,17 @@ const getStudentProgress = async (userId) => {
          ORDER BY s.updated_at DESC LIMIT 50`, [userId]
     );
     const [difficulty] = await pool.query(
-        `SELECT question_difficulty difficulty, COUNT(*) answeredCount,
+        `SELECT question_difficulty difficulty,
+          SUM(CASE WHEN is_correct IN (0,1) THEN 1 ELSE 0 END) answeredCount,
           SUM(is_correct=1) correctCount,
-          ROUND(SUM(is_correct=1)*100/COUNT(*),2) accuracy
+          ROUND(SUM(is_correct=1)*100/NULLIF(SUM(is_correct IN (0,1)),0),2) accuracy
          FROM adaptive_practice_answers a INNER JOIN adaptive_practice_sessions s ON s.id=a.session_id
          WHERE s.user_id=? GROUP BY question_difficulty ORDER BY question_difficulty`, [userId]
     );
     const [knowledge] = await pool.query(
-        `SELECT COALESCE(NULLIF(knowledge_point,''),'未标注知识点') knowledgePoint, COUNT(*) answeredCount,
-          SUM(is_correct=1) correctCount, ROUND(SUM(is_correct=1)*100/COUNT(*),2) accuracy
+        `SELECT COALESCE(NULLIF(knowledge_point,''),'未标注知识点') knowledgePoint,
+          SUM(CASE WHEN is_correct IN (0,1) THEN 1 ELSE 0 END) answeredCount,
+          SUM(is_correct=1) correctCount, ROUND(SUM(is_correct=1)*100/NULLIF(SUM(is_correct IN (0,1)),0),2) accuracy
          FROM adaptive_practice_answers a INNER JOIN adaptive_practice_sessions s ON s.id=a.session_id
          WHERE s.user_id=? GROUP BY knowledgePoint ORDER BY accuracy ASC, answeredCount DESC LIMIT 12`, [userId]
     );
@@ -231,7 +250,7 @@ const findEligibleQuestionById = async (session, questionId) => {
     return rows[0] || null;
 };
 
-const saveAnswerAndState = async ({ session, question, userAnswer, isCorrect, adjustment }) => {
+const saveAnswerAndState = async ({ session, question, userAnswer, isCorrectValue, correctIncrement, adjustment }) => {
     const conn = await pool.getConnection();
     try {
         await conn.beginTransaction();
@@ -242,7 +261,7 @@ const saveAnswerAndState = async ({ session, question, userAnswer, isCorrect, ad
               user_answer, correct_answer, is_correct, difficulty_before, difficulty_after, adjustment_message)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [session.id, sequence, question.id, question.题型, question.normalizedDifficulty, question.知识点,
-                userAnswer, question.答案, isCorrect ? 1 : 0, session.current_difficulty,
+                userAnswer, question.答案, isCorrectValue, session.current_difficulty,
                 adjustment.difficulty, adjustment.message]
         );
         const complete = sequence >= session.planned_count;
@@ -250,7 +269,7 @@ const saveAnswerAndState = async ({ session, question, userAnswer, isCorrect, ad
             `UPDATE adaptive_practice_sessions SET current_difficulty = ?, answered_count = ?,
              correct_count = correct_count + ?, adjustment_signal = ?, cooldown_remaining = ?,
              status = ?, completed_at = ${complete ? 'NOW()' : 'NULL'} WHERE id = ?`,
-            [adjustment.difficulty, sequence, isCorrect ? 1 : 0, adjustment.signal,
+            [adjustment.difficulty, sequence, correctIncrement, adjustment.signal,
                 adjustment.cooldown, complete ? 'completed' : 'active', session.id]
         );
         await conn.commit();
@@ -263,4 +282,64 @@ const saveAnswerAndState = async ({ session, question, userAnswer, isCorrect, ad
     }
 };
 
-module.exports = { OBJECTIVE_TYPES, ALL_TYPES, ensureTables, getInventory, getChapterInventory, getOverview, getStudentProgress, createSession, findSession, findAnswers, findNextQuestion, findEligibleQuestionById, saveAnswerAndState };
+const findAdaptiveAnswerById = async (id) => {
+    const [rows] = await pool.query(
+        `SELECT a.*, s.user_id, u.username, u.nickname
+         FROM adaptive_practice_answers a
+         INNER JOIN adaptive_practice_sessions s ON s.id = a.session_id
+         INNER JOIN users u ON u.id = s.user_id
+         WHERE a.id = ?`,
+        [id]
+    );
+    return rows[0] || null;
+};
+
+const reviewAdaptiveAnswer = async ({ id, reviewerId, status, scoreRate, comment }) => {
+    const isCorrect = status === 'correct' ? 1 : status === 'incorrect' ? 0 : 1;
+    await pool.query(
+        `UPDATE adaptive_practice_answers
+         SET is_correct = ?, review_status = ?, review_score_rate = ?, review_comment = ?,
+             reviewed_by = ?, reviewed_at = NOW()
+         WHERE id = ?`,
+        [isCorrect, status, scoreRate, comment || null, reviewerId, id]
+    );
+    return findAdaptiveAnswerById(id);
+};
+
+const listReviewAnswers = async ({ status = 'pending', page = 1, pageSize = 20 } = {}) => {
+    const currentPage = Math.max(parseInt(page, 10) || 1, 1);
+    const currentSize = Math.min(Math.max(parseInt(pageSize, 10) || 20, 1), 100);
+    const conditions = [];
+    const params = [];
+    if (status === 'pending') {
+        conditions.push('a.review_status IS NULL AND a.is_correct = 3');
+    } else if (status === 'reviewed') {
+        conditions.push('a.review_status IS NOT NULL');
+    } else {
+        conditions.push('a.review_status = ?');
+        params.push(status);
+    }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const [countRows] = await pool.query(
+        `SELECT COUNT(*) AS total FROM adaptive_practice_answers a ${where}`,
+        params
+    );
+    const [rows] = await pool.query(
+        `SELECT a.*, s.user_id, u.username, u.nickname,
+                q.题目 AS title, q.选项 AS options, q.知识点 AS knowledge_point
+         FROM adaptive_practice_answers a
+         INNER JOIN adaptive_practice_sessions s ON s.id = a.session_id
+         INNER JOIN users u ON u.id = s.user_id
+         LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         ${where} ORDER BY a.id DESC LIMIT ? OFFSET ?`,
+        [...params, currentSize, (currentPage - 1) * currentSize]
+    );
+    return { rows, total: countRows[0].total };
+};
+
+module.exports = {
+    OBJECTIVE_TYPES, ALL_TYPES, ensureTables, getInventory, getChapterInventory,
+    getOverview, getStudentProgress, createSession, findSession, findAnswers,
+    findNextQuestion, findEligibleQuestionById, saveAnswerAndState,
+    findAdaptiveAnswerById, reviewAdaptiveAnswer, listReviewAnswers,
+};

@@ -182,7 +182,7 @@ const listRegistrations = async ({ page = 1, pageSize = 20, status } = {}) => {
 };
 
 // 审核通过（管理员/教师）
-const approveRegistration = async (requestId, adminId) => {
+const approveRegistration = async (requestId, reviewer) => {
     const request = await registrationModel.findById(requestId);
     if (!request) {
         const error = new Error('注册申请不存在');
@@ -195,6 +195,9 @@ const approveRegistration = async (requestId, adminId) => {
         error.statusCode = 409;
         error.errorCode = 40903;
         throw error;
+    }
+    if (reviewer.role === 'teacher' && request.role === 'teacher') {
+        throw makeError('教师只能审核学生注册申请，教师申请需由管理员审核', 403, 40301);
     }
     const existingUser = await userModel.findByUsername(request.username);
     if (existingUser) {
@@ -211,12 +214,12 @@ const approveRegistration = async (requestId, adminId) => {
         nickname: request.nickname,
         status: 1,
     });
-    await registrationModel.markApproved(requestId, adminId);
+    await registrationModel.markApproved(requestId, reviewer.id);
     return { id: requestId };
 };
 
 // 审核拒绝（管理员/教师）
-const rejectRegistration = async (requestId, reason, adminId) => {
+const rejectRegistration = async (requestId, reason, reviewer) => {
     const trimmedReason = String(reason || '').trim();
     if (!trimmedReason) {
         const error = new Error('请填写拒绝原因');
@@ -237,7 +240,10 @@ const rejectRegistration = async (requestId, reason, adminId) => {
         error.errorCode = 40903;
         throw error;
     }
-    await registrationModel.markRejected(requestId, trimmedReason, adminId);
+    if (reviewer.role === 'teacher' && request.role === 'teacher') {
+        throw makeError('教师只能审核学生注册申请，教师申请需由管理员审核', 403, 40301);
+    }
+    await registrationModel.markRejected(requestId, trimmedReason, reviewer.id);
     return { id: requestId };
 };
 

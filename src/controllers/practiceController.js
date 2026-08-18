@@ -71,6 +71,42 @@ const getExam = async (req, res, next) => {
     }
 };
 
+// 学生开始作答（服务端记录开始时间）
+const startExam = async (req, res, next) => {
+    try {
+        res.json(success(await practiceService.startExam(req.user.id, req.params.id)));
+    } catch (err) {
+        next(err);
+    }
+};
+
+// 编辑试卷设置（标题/时限/截止/次数/班级）
+const updateExam = async (req, res, next) => {
+    try {
+        res.json(success(await practiceService.updateExamSettings(req.user, req.params.id, req.body)));
+    } catch (err) {
+        next(err);
+    }
+};
+
+// 发布/关闭试卷
+const updateExamStatus = async (req, res, next) => {
+    try {
+        res.json(success(await practiceService.updateExamStatus(req.user, req.params.id, req.body.status)));
+    } catch (err) {
+        next(err);
+    }
+};
+
+// 删除无作答记录的试卷
+const removeExam = async (req, res, next) => {
+    try {
+        res.json(success(await practiceService.deleteExam(req.user, req.params.id), '试卷已删除'));
+    } catch (err) {
+        next(err);
+    }
+};
+
 // 提交答卷
 const submit = async (req, res, next) => {
     try {
@@ -106,7 +142,7 @@ const getRecord = async (req, res, next) => {
 // 统计分析
 const statistics = async (req, res, next) => {
     try {
-        const stats = await practiceService.getStats(req.user.id);
+        const stats = await practiceService.getStats(req.user.id, req.user.role);
         res.json(success(stats));
     } catch (err) {
         next(err);
@@ -148,7 +184,8 @@ const adminListRecords = async (req, res, next) => {
         const page = parseInt(req.query.page) || 1;
         const pageSize = parseInt(req.query.pageSize) || 20;
         const role = req.query.role; // student / teacher（仅管理员可传，教师强制为 student）
-        const result = await practiceService.adminListRecords(req.user.role, { role, page, pageSize });
+        const examId = req.query.examId ? Number(req.query.examId) : null;
+        const result = await practiceService.adminListRecords(req.user.role, req.user.id, { role, page, pageSize, examId });
         res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) {
         next(err);
@@ -159,7 +196,7 @@ const adminListRecords = async (req, res, next) => {
 const adminListUsers = async (req, res, next) => {
     try {
         const role = req.query.role;
-        const result = await practiceService.adminListUsers(req.user.role, { role });
+        const result = await practiceService.adminListUsers(req.user.role, req.user.id, { role });
         res.json(success(result));
     } catch (err) {
         next(err);
@@ -171,7 +208,7 @@ const adminListUserRecords = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const pageSize = parseInt(req.query.pageSize) || 20;
-        const result = await practiceService.adminListUserRecords(req.user.role, req.params.userId, { page, pageSize });
+        const result = await practiceService.adminListUserRecords(req.user.role, req.user.id, req.params.userId, { page, pageSize });
         res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) {
         next(err);
@@ -181,7 +218,7 @@ const adminListUserRecords = async (req, res, next) => {
 // 管理端：查看指定用户的统计分析
 const adminGetUserStats = async (req, res, next) => {
     try {
-        const stats = await practiceService.adminGetUserStats(req.user.role, req.params.userId);
+        const stats = await practiceService.adminGetUserStats(req.user.role, req.user.id, req.params.userId);
         res.json(success(stats));
     } catch (err) {
         next(err);
@@ -191,7 +228,7 @@ const adminGetUserStats = async (req, res, next) => {
 // 管理端：查看任意答题记录详情
 const adminGetRecord = async (req, res, next) => {
     try {
-        const record = await practiceService.adminGetRecord(req.user.role, req.params.id);
+        const record = await practiceService.adminGetRecord(req.user.role, req.user.id, req.params.id);
         res.json(success(record));
     } catch (err) {
         next(err);
@@ -205,6 +242,28 @@ const reviewSubjectiveAnswer = async (req, res, next) => {
             return next(Object.assign(new Error('管理员无权复核主观题答案'), { statusCode: 403 }));
         }
         res.json(success(await practiceService.reviewSubjectiveAnswer(req.user.id, req.params.answerId, req.body), '复核结果已保存'));
+    } catch (err) { next(err); }
+};
+
+const reviewAdaptiveAnswer = async (req, res, next) => {
+    try {
+        if (req.user.role === 'admin') {
+            return next(Object.assign(new Error('管理员无权复核自适应主观题答案'), { statusCode: 403 }));
+        }
+        res.json(success(await practiceService.reviewAdaptiveAnswer(req.user.id, req.params.answerId, req.body), '复核结果已保存'));
+    } catch (err) { next(err); }
+};
+
+const listAdaptiveReview = async (req, res, next) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const pageSize = parseInt(req.query.pageSize) || 20;
+        const result = await practiceService.listAdaptiveReview({
+            status: req.query.status || 'pending',
+            page,
+            pageSize,
+        });
+        res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) { next(err); }
 };
 
@@ -228,7 +287,7 @@ const saveExamDraft = async (req, res, next) => {
 const adminGetAllStats = async (req, res, next) => {
     try {
         const role = req.query.role;
-        const result = await practiceService.adminGetAllStatsByUser(req.user.role, { role });
+        const result = await practiceService.adminGetAllStatsByUser(req.user.role, req.user.id, { role });
         res.json(success(result));
     } catch (err) {
         next(err);
@@ -275,9 +334,10 @@ const exportExam = async (req, res, next) => {
 
 module.exports = {
 
-    generate, inventory, previewRule, generateRule, listExams, getExam, submit, listRecords, getRecord, statistics,
+    generate, inventory, previewRule, generateRule, listExams, getExam, startExam, updateExam, updateExamStatus, removeExam,
+    submit, listRecords, getRecord, statistics,
     getExamDraft, saveExamDraft, wrongQuestions, wrongExam,
 
     adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
-    reviewSubjectiveAnswer, examAnalytics, questionDetail, exportExam,
+    reviewSubjectiveAnswer, reviewAdaptiveAnswer, listAdaptiveReview, examAnalytics, questionDetail, exportExam,
 };

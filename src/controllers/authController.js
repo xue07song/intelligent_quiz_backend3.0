@@ -58,7 +58,7 @@ const listRegistrations = async (req, res, next) => {
 // 审核通过
 const approveRegistration = async (req, res, next) => {
     try {
-        const result = await authService.approveRegistration(req.params.id, req.user.id);
+        const result = await authService.approveRegistration(req.params.id, req.user);
         res.json(success(result, '✅ 审核通过成功'));
     } catch (err) {
         next(err);
@@ -68,7 +68,7 @@ const approveRegistration = async (req, res, next) => {
 // 审核拒绝
 const rejectRegistration = async (req, res, next) => {
     try {
-        const result = await authService.rejectRegistration(req.params.id, req.body.reason, req.user.id);
+        const result = await authService.rejectRegistration(req.params.id, req.body.reason, req.user);
         res.json(success(result, '✅ 已拒绝该注册申请'));
     } catch (err) {
         next(err);

@@ -172,23 +172,46 @@ const batchRemove = async (ids) => {
     return result;
 };
 
-const statistics = async () => {
+const statistics = async (subjects) => {
+    const conditions = [];
+    const params = [];
+    if (Array.isArray(subjects)) {
+        if (subjects.length === 0) {
+            conditions.push("(科目 IS NULL OR 科目 = '')");
+        } else {
+            const placeholders = subjects.map(() => '?').join(', ');
+            conditions.push(`(科目 IN (${placeholders}) OR 科目 IS NULL OR 科目 = '')`);
+            params.push(...subjects);
+        }
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const subjectScope = conditions.length > 0 ? ` AND ${conditions.join(' AND ')}` : '';
+
     const [chapterStats] = await pool.query(
-        `SELECT 章节, COUNT(*) AS count FROM ${TABLE} GROUP BY 章节 ORDER BY 章节`
+        `SELECT 章节, COUNT(*) AS count FROM ${TABLE} ${where} GROUP BY 章节 ORDER BY 章节`,
+        params
     );
     const [typeStats] = await pool.query(
-        `SELECT 题型, COUNT(*) AS count FROM ${TABLE} GROUP BY 题型 ORDER BY 题型`
+        `SELECT 题型, COUNT(*) AS count FROM ${TABLE} ${where} GROUP BY 题型 ORDER BY 题型`,
+        params
     );
     const [difficultyStats] = await pool.query(
-        `SELECT 难度, COUNT(*) AS count FROM ${TABLE} GROUP BY 难度 ORDER BY 难度`
+        `SELECT 难度, COUNT(*) AS count FROM ${TABLE} ${where} GROUP BY 难度 ORDER BY 难度`,
+        params
     );
     const [creatorStats] = await pool.query(
-        `SELECT 出题人, COUNT(*) AS count FROM ${TABLE} WHERE 出题人 IS NOT NULL AND 出题人 != '' GROUP BY 出题人 ORDER BY count DESC LIMIT 10`
+        `SELECT 出题人, COUNT(*) AS count FROM ${TABLE}
+         WHERE 出题人 IS NOT NULL AND 出题人 != ''${subjectScope}
+         GROUP BY 出题人 ORDER BY count DESC LIMIT 10`,
+        params
     );
     const [subjectStats] = await pool.query(
-        `SELECT 科目 AS subject, COUNT(*) AS count FROM ${TABLE} WHERE 科目 IS NOT NULL AND 科目 != '' GROUP BY 科目 ORDER BY 科目`
+        `SELECT 科目 AS subject, COUNT(*) AS count FROM ${TABLE}
+         WHERE 科目 IS NOT NULL AND 科目 != ''${subjectScope}
+         GROUP BY 科目 ORDER BY 科目`,
+        params
     );
-    const [totalResult] = await pool.query(`SELECT COUNT(*) AS total FROM ${TABLE}`);
+    const [totalResult] = await pool.query(`SELECT COUNT(*) AS total FROM ${TABLE} ${where}`, params);
     const total = totalResult[0].total;
 
     return {
@@ -201,17 +224,28 @@ const statistics = async () => {
     };
 };
 
-const searchByKeyword = async (keyword, { page = 1, pageSize = 20 } = {}) => {
+const searchByKeyword = async (keyword, { page = 1, pageSize = 20, subjects } = {}) => {
     const kw = `%${keyword}%`;
     const params = [kw, kw, kw, kw];
+    const conditions = ['(题目 LIKE ? OR 选项 LIKE ? OR 知识点 LIKE ? OR 解析 LIKE ?)'];
+    if (Array.isArray(subjects)) {
+        if (subjects.length === 0) {
+            conditions.push("(科目 IS NULL OR 科目 = '')");
+        } else {
+            const placeholders = subjects.map(() => '?').join(', ');
+            conditions.push(`(科目 IN (${placeholders}) OR 科目 IS NULL OR 科目 = '')`);
+            params.push(...subjects);
+        }
+    }
+    const where = `WHERE ${conditions.join(' AND ')}`;
     const [countResult] = await pool.query(
-        `SELECT COUNT(*) AS total FROM ${TABLE} WHERE 题目 LIKE ? OR 选项 LIKE ? OR 知识点 LIKE ? OR 解析 LIKE ?`,
+        `SELECT COUNT(*) AS total FROM ${TABLE} ${where}`,
         params
     );
     const total = countResult[0].total;
     const offset = (page - 1) * pageSize;
     const [rows] = await pool.query(
-        `SELECT * FROM ${TABLE} WHERE 题目 LIKE ? OR 选项 LIKE ? OR 知识点 LIKE ? OR 解析 LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?`,
+        `SELECT * FROM ${TABLE} ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
         [...params, pageSize, offset]
     );
     return { rows, total };

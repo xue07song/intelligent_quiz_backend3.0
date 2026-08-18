@@ -1,6 +1,8 @@
 const { chat, chatJSON, isConfigured } = require('../utils/aiClient');
 const practiceModel = require('../models/practiceModel');
 const questionModel = require('../models/questionModel');
+const userModel = require('../models/userModel');
+const { isValidSubject } = require('../config/subjects');
 
 // 题型映射（与 typeMap 一致）
 const TYPE_MAP = {
@@ -41,7 +43,7 @@ const generateQuestions = async (options) => {
     const userPrompt = `请围绕「章节${章节 || '不限'}、知识点：${知识点 || '不限'}」生成 ${count} 道${typeName}，${difficultyDesc}。
 ${补充说明 ? '附加要求：' + 补充说明 : ''}
 
-每道题包含字段：id(如 AI001)、章节(数字)、题型(数字1-6)、序号(0)、题目、选项、答案、解析、难度、知识点、使用频率("0")、出题人("AI")。
+每道题包含字段：id(如 AI001)、章节(数字)、题型(数字1-6)、序号(0)、题目、选项、答案、解析、难度、知识点、科目、使用频率("0")、出题人("AI")。
 
 返回 JSON：{"questions": [{...}]}`;
 
@@ -63,25 +65,36 @@ ${补充说明 ? '附加要求：' + 补充说明 : ''}
         解析: String(q.解析 || ''),
         难度: String(q.难度 || (难度 || '')),
         知识点: String(q.知识点 || (知识点 || '')),
+        科目: String(q.科目 || '').trim(),
         使用频度: String(q.使用频率 || '0'),
         出题人: String(q.出题人 || 'AI'),
     })).filter((q) => q.id && q.题目);
 };
 
 // 批量入库 AI 生成的题目（教师审核后调用，复用 batchImport 逻辑，重复 id 跳过）
-const saveGenerated = async (items) => {
+const saveGenerated = async (items, subject, actor) => {
     const questionService = require('./questionService');
-    return questionService.batchImport(items);
+    return questionService.batchImport(items, subject ? { subject: String(subject).trim() } : {}, actor);
 };
 
 // ==================== 2. AI 答疑助手 ====================
 // 学生做题时提问：传入题目内容 + 学生问题，返回思路提示/解析
-const askTutor = async ({ question, options, questionType, userQuestion, userAnswer }) => {
+const askTutor = async ({ question, options, questionType, userQuestion, userAnswer, examId }) => {
     if (!isConfigured()) {
         const err = new Error('AI 服务未配置');
         err.statusCode = 500;
         err.errorCode = 50001;
         throw err;
+    }
+    if (examId) {
+        const exam = await practiceModel.findExamById(examId);
+        if (exam && exam.creator_role === 'teacher' &&
+            (exam.duration_minutes || exam.end_at || exam.max_attempts || (exam.status && exam.status !== 'published'))) {
+            const err = new Error('正式考试模式下暂不开放 AI 答疑，交卷后可继续使用');
+            err.statusCode = 403;
+            err.errorCode = 40301;
+            throw err;
+        }
     }
 
     const typeName = TYPE_MAP[questionType] || '题目';
@@ -110,7 +123,7 @@ const askTutor = async ({ question, options, questionType, userQuestion, userAns
 
 // ==================== 3. AI 智能组卷 ====================
 // 基于学生近期表现 + 章节/难度要求，AI 推荐组卷策略并从题库选题
-const smartGenerateExam = async (userId, options) => {
+const smartGenerateExam = async (user, options) => {
     if (!isConfigured()) {
         const err = new Error('AI 服务未配置');
         err.statusCode = 500;
@@ -118,8 +131,42 @@ const smartGenerateExam = async (userId, options) => {
         throw err;
     }
 
-    const { 章节, 题型, 难度, count = 10, focusWeakPoints = true } = options;
+    const { 章节, 题型, 难度, count = 10, focusWeakPoints = true, subject, classId } = options;
     const numCount = Math.min(Math.max(Number(count) || 10, 1), 50);
+
+    let finalSubject = null;
+    if (user.role === 'teacher') {
+        const teacherSubjects = await userModel.getTeacherSubjects(user.id);
+        if (!subject || !String(subject).trim()) {
+            const err = new Error('教师 AI 组卷必须选择科目');
+            err.statusCode = 400;
+            err.errorCode = 40001;
+            throw err;
+        }
+        const s = String(subject).trim();
+        if (!isValidSubject(s)) {
+            const err = new Error(`科目「${s}」不在合法科目列表中`);
+            err.statusCode = 400;
+            err.errorCode = 40002;
+            throw err;
+        }
+        if (!teacherSubjects.includes(s)) {
+            const err = new Error(`无权使用科目「${s}」组卷，请选择您所教的科目`);
+            err.statusCode = 403;
+            err.errorCode = 40303;
+            throw err;
+        }
+        finalSubject = s;
+    } else if (subject && String(subject).trim()) {
+        const s = String(subject).trim();
+        if (!isValidSubject(s)) {
+            const err = new Error(`科目「${s}」不在合法科目列表中`);
+            err.statusCode = 400;
+            err.errorCode = 40002;
+            throw err;
+        }
+        finalSubject = s;
+    }
 
     // 取学生近期统计（错题分布、薄弱题型）
     const stats = await practiceModel.getStatistics(userId);
@@ -157,14 +204,14 @@ const smartGenerateExam = async (userId, options) => {
             const n = Number(d.数量) || 0;
             if (!t || n <= 0) continue;
             const rows = await practiceModel.randomPick({
-                章节, 题型: t, 难度, count: n,
+                章节, 题型: t, 难度, count: n, 科目: finalSubject,
             });
             pickedQuestions.push(...rows);
         }
     } else {
         // 单一题型或无策略，直接抽
         const rows = await practiceModel.randomPick({
-            章节, 题型, 难度, count: numCount,
+            章节, 题型, 难度, count: numCount, 科目: finalSubject,
         });
         pickedQuestions.push(...rows);
     }
@@ -190,12 +237,14 @@ const smartGenerateExam = async (userId, options) => {
     // 创建试卷
     const title = `AI 智能组卷-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
     const { examId, objectiveCount } = await practiceModel.createExam({
-        userId,
+        userId: user.id,
         title,
         chapter: 章节,
         questionType: 题型,
         difficulty: 难度,
         questions: finalQuestions,
+        subject: finalSubject,
+        classId: classId || null,
     });
 
     return {
@@ -233,9 +282,14 @@ const analyzeWeakness = async (userId) => {
 
     // 取最近错题明细（最多 50 题）用于 AI 分析知识点
     const [recentWrong] = await require('../config/db').query(
-        `SELECT a.question_id, a.question_type, a.user_answer, a.correct_answer, q.题目, q.选项, q.知识点, q.章节
+        `SELECT a.question_id, a.question_type, a.user_answer, a.correct_answer,
+                COALESCE(eq.snapshot_题目, q.题目) AS 题目,
+                COALESCE(eq.snapshot_选项, q.选项) AS 选项,
+                COALESCE(eq.snapshot_知识点, q.知识点) AS 知识点,
+                COALESCE(eq.snapshot_章节, q.章节) AS 章节
          FROM \`exam_answers\` a
          INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         LEFT JOIN \`exam_questions\` eq ON eq.exam_id = r.exam_id AND eq.question_id = a.question_id
          LEFT JOIN \`题库1\` q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
          WHERE r.user_id = ? AND a.is_correct = 0
          ORDER BY r.submitted_at DESC LIMIT 50`,
