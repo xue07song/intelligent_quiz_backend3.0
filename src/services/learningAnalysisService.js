@@ -1,9 +1,10 @@
 const model = require('../models/learningAnalysisModel');
+const { normalizeDifficultyLevel } = require('../utils/difficulty');
 
 const pct = (correct, total) => total ? Math.round(correct * 100 / total) : 0;
 const daysSince = (value) => value ? Math.floor((Date.now() - new Date(value).getTime()) / 86400000) : null;
 const group = (rows, key) => Object.values(rows.reduce((map, row) => {
-    const value = row[key] == null ? '未标注' : String(row[key]);
+    const value = row[key] == null || String(row[key]).trim() === '' ? '未标注' : String(row[key]);
     const item = map[value] ||= { key: value, answered: 0, correct: 0, latestAt: null, sources: new Set() };
     item.answered += 1; item.correct += Number(row.isCorrect) === 1 ? 1 : 0;
     if (!item.latestAt || new Date(row.answeredAt) > new Date(item.latestAt)) item.latestAt = row.answeredAt;
@@ -13,14 +14,24 @@ const group = (rows, key) => Object.values(rows.reduce((map, row) => {
     return map;
 }, {})).map(item => { const accuracy=pct(item.correct,item.answered); const masteryScore=Math.round((item.correct+3)*100/(item.answered+5)); return { ...item, accuracy, masteryScore, sampleLevel:item.answered>=10?'充分':item.answered>=5?'一般':'较少', sourceCount:item.sources.size, sources:undefined }; });
 
-const analyze = async (userId) => {
+const teacherExamIds = async (teacherId) => {
+    const practiceModel = require('../models/practiceModel');
+    return practiceModel.findExamIdsByUser(teacherId);
+};
+
+const analyze = async (userId, examIds = null) => {
     const student = await model.getStudent(userId);
     if (!student) throw Object.assign(new Error('学生不存在'), { statusCode: 404 });
     const [records, examRows, adaptiveRows] = await Promise.all([
-        model.getExamRecords(userId), model.getExamAnswers(userId), model.getAdaptiveAnswers(userId),
+        model.getExamRecords(userId, examIds), model.getExamAnswers(userId, examIds), model.getAdaptiveAnswers(userId),
     ]);
+    const normalizedExamRows = examRows.map((row) => ({
+        ...row,
+        difficulty: normalizeDifficultyLevel(row.difficulty),
+        knowledgePoint: String(row.knowledgePoint || '').trim() || '未标注知识点',
+    }));
     const answers = [
-        ...examRows.map(row => ({ ...row, source: '试卷' })),
+        ...normalizedExamRows.map(row => ({ ...row, source: '试卷' })),
         ...adaptiveRows.map(row => ({ ...row, source: '自适应练习' })),
     ].sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt));
     const answered = answers.length, correct = answers.filter(row => Number(row.isCorrect) === 1).length;
@@ -77,4 +88,4 @@ const overview = async () => {
         commonWeaknesses:aggregateWeaknesses(analyses), classWeaknesses };
 };
 
-module.exports = { analyze, overview };
+module.exports = { analyze, overview, teacherExamIds };

@@ -1,34 +1,36 @@
 const { error } = require('../utils/response');
+const { validateQuestionPayload, isValidDifficulty } = require('../utils/questionValidation');
 
 const validateQuestionInput = (req, res, next) => {
-    const { id, 题目 } = req.body;
-
     if (req.method === 'POST') {
-        if (!id || !id.trim()) {
-            return res.status(400).json(error(40001, 'ID不能为空'));
+        const result = validateQuestionPayload(req.body, {
+            requireId: true,
+            requireSubject: true,
+            requireDifficulty: true,
+            requireAnswer: true,
+        });
+        if (!result.valid) {
+            return res.status(400).json(error(40001, result.errors[0]));
         }
-        if (!题目 || !题目.trim()) {
-            return res.status(400).json(error(40001, '题目内容不能为空'));
-        }
+        return next();
     }
 
     if (req.method === 'PUT') {
-        if (id !== undefined && !id.trim()) {
+        if (req.body.id !== undefined && (!req.body.id || !String(req.body.id).trim())) {
             return res.status(400).json(error(40001, 'ID不能为空'));
         }
-        if (req.body.题目 !== undefined && !req.body.题目.trim()) {
+        if (req.body.题目 !== undefined && !String(req.body.题目 || '').trim()) {
             return res.status(400).json(error(40001, '题目内容不能为空'));
         }
-    }
-
-    const validTypes = [1, 2, 3, 4, 5, 6];
-    if (req.body.题型 !== undefined && !validTypes.includes(Number(req.body.题型))) {
-        return res.status(400).json(error(40002, '题型无效，有效值为：1判断 2单选 3多选 4填空 5简答 6程序'));
-    }
-
-    const validDifficulties = ['1', '2', '3', '4', '5', '1-5'];
-    if (req.body.难度 !== undefined && !validDifficulties.some(d => String(req.body.难度).includes(d))) {
-        return res.status(400).json(error(40003, '难度值无效'));
+        if (req.body.题型 !== undefined) {
+            const result = validateQuestionPayload({ ...req.body }, { requireAnswer: true, requireTitle: false });
+            if (!result.valid) {
+                return res.status(400).json(error(40002, result.errors[0]));
+            }
+        }
+        if (req.body.难度 !== undefined && req.body.难度 !== '' && !isValidDifficulty(req.body.难度)) {
+            return res.status(400).json(error(40003, '难度值无效，仅支持 1-5、1星-5星或简单/中等/困难等常用等级'));
+        }
     }
 
     next();

@@ -3,14 +3,20 @@ const pool = require('../config/db');
 // ==================== 班级表 ====================
 
 // 班级列表（含每班学生人数）
-const findAll = async ({ keyword } = {}) => {
+const findAll = async ({ keyword, ownerId } = {}) => {
     let where = '';
     const params = [];
+    const conditions = [];
     if (keyword && keyword.trim()) {
-        where = 'WHERE c.name LIKE ? OR c.grade LIKE ? OR c.remark LIKE ?';
+        conditions.push('(c.name LIKE ? OR c.grade LIKE ? OR c.remark LIKE ?)');
         const kw = `%${keyword.trim()}%`;
         params.push(kw, kw, kw);
     }
+    if (ownerId !== undefined && ownerId !== null) {
+        conditions.push('c.owner_id = ?');
+        params.push(ownerId);
+    }
+    if (conditions.length) where = `WHERE ${conditions.join(' AND ')}`;
     const [rows] = await pool.query(
         `SELECT c.*, co.nickname counselor_name, co.employee_no counselor_employee_no,
                 ht.nickname head_teacher_name, ht.employee_no head_teacher_employee_no,
@@ -127,17 +133,22 @@ const findStudentsByClassId = async (classId, { page = 1, pageSize = 50 } = {}) 
 };
 
 // 可添加学生列表：返回所有学生，附带已加入的班级列表
-const findAvailableStudents = async ({ page = 1, pageSize = 50, keyword } = {}) => {
+const findAvailableStudents = async ({ page = 1, pageSize = 50, keyword, college } = {}) => {
     const offset = (page - 1) * pageSize;
-    let whereExtra = '';
+    const conditions = ["u.role = 'student'"];
     const params = [];
+    if (college) {
+        conditions.push('u.college = ?');
+        params.push(college);
+    }
     if (keyword && keyword.trim()) {
         const kw = `%${keyword.trim()}%`;
-        whereExtra = ' AND (u.username LIKE ? OR u.nickname LIKE ? OR u.email LIKE ? OR u.student_no LIKE ?)';
+        conditions.push('(u.username LIKE ? OR u.nickname LIKE ? OR u.email LIKE ? OR u.student_no LIKE ?)');
         params.push(kw, kw, kw, kw);
     }
+    const where = `WHERE ${conditions.join(' AND ')}`;
     const [countRows] = await pool.query(
-        `SELECT COUNT(*) AS total FROM users u WHERE u.role = 'student'${whereExtra}`,
+        `SELECT COUNT(*) AS total FROM users u ${where}`,
         params
     );
     const total = countRows[0].total;
@@ -145,7 +156,7 @@ const findAvailableStudents = async ({ page = 1, pageSize = 50, keyword } = {}) 
         `SELECT u.id, u.username, u.nickname, u.email, u.phone, u.school, u.college, u.status,
                 u.student_no, u.created_at
          FROM users u
-         WHERE u.role = 'student'${whereExtra}
+         ${where}
          ORDER BY u.id ASC
          LIMIT ? OFFSET ?`,
         [...params, pageSize, offset]

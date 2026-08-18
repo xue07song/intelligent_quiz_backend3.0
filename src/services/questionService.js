@@ -1,6 +1,7 @@
 const questionModel = require('../models/questionModel');
 const userModel = require('../models/userModel');
 const { isValidSubject } = require('../config/subjects');
+const { validateQuestionPayload, isValidDifficulty, parseType } = require('../utils/questionValidation');
 
 // 统一构造错误
 const makeError = (message, statusCode, errorCode) => {
@@ -31,14 +32,47 @@ const assertSubjectAllowed = (subject, teacherSubjects) => {
     }
 };
 
+// 统一字段标准化：兼容前端历史字段「使用频率」与数据库字段「使用频度」
+const normalizeQuestionData = (data) => {
+    const copy = { ...data };
+    if (copy.使用频率 !== undefined && copy.使用频度 === undefined) {
+        copy.使用频度 = copy.使用频率;
+    }
+    delete copy.使用频率;
+
+    const result = {};
+    if (copy.id !== undefined) result.id = String(copy.id).trim();
+    for (const key of ['章节', '序号']) {
+        if (copy[key] !== undefined) result[key] = Number(copy[key]) || 0;
+    }
+    if (copy.题型 !== undefined) result.题型 = Number(copy.题型);
+    for (const key of ['题目', '选项', '答案', '解析', '知识点', '出题人', '科目']) {
+        if (copy[key] !== undefined) result[key] = String(copy[key]).trim();
+    }
+    for (const key of ['难度', '使用频度']) {
+        if (copy[key] !== undefined) result[key] = String(copy[key]).trim();
+    }
+    return result;
+};
+
 const createQuestion = async (data, actor) => {
-    const existing = await questionModel.findById(data.id);
+    const check = validateQuestionPayload(data, {
+        requireId: true,
+        requireSubject: true,
+        requireDifficulty: true,
+        requireAnswer: true,
+    });
+    if (!check.valid) {
+        throw makeError(check.errors[0], 400, 40001);
+    }
+    const normalized = normalizeQuestionData(data);
+    const teacherSubjects = await getActorSubjects(actor);
+    assertSubjectAllowed(normalized.科目, teacherSubjects);
+    const existing = await questionModel.findById(normalized.id);
     if (existing) {
         throw makeError('题目ID已存在', 409, 40901);
     }
-    const teacherSubjects = await getActorSubjects(actor);
-    assertSubjectAllowed(data.科目, teacherSubjects);
-    return questionModel.create(data);
+    return questionModel.create(normalized);
 };
 
 const getQuestions = async (options, actor) => {
@@ -86,7 +120,12 @@ const updateQuestion = async (id, data, actor) => {
     if (data.科目 !== undefined) {
         assertSubjectAllowed(data.科目, teacherSubjects);
     }
-    return questionModel.update(id, data);
+    // 用合并后的完整题目校验，避免切换题型后答案/选项不匹配
+    const check = validateQuestionPayload({ ...existing, ...data }, { requireAnswer: true });
+    if (!check.valid) {
+        throw makeError(check.errors[0], 400, 40002);
+    }
+    return questionModel.update(id, normalizeQuestionData(data));
 };
 
 const deleteQuestion = async (id, actor) => {
@@ -119,11 +158,22 @@ const batchImport = async (items, options = {}, actor) => {
     const validItems = [];
     const errors = [];
 
+    const importTime = Date.now();
     items.forEach((item, index) => {
         const rowNum = index + 1;
-        // 必填字段校验
-        if (!item.id || !item.题目) {
-            errors.push({ row: rowNum, id: item.id || '(空)', reason: 'ID 或 题目内容 为空' });
+        const 题目 = String(item.题目 ?? '').trim();
+        const 题型 = parseType(item.题型);
+        const 难度 = String(item.难度 ?? '').trim();
+        if (!题目) {
+            errors.push({ row: rowNum, id: item.id || '(空)', reason: '题目内容为空' });
+            return;
+        }
+        if (题型 === null) {
+            errors.push({ row: rowNum, id: item.id || '(空)', reason: `题型无效：${item.题型}` });
+            return;
+        }
+        if (!难度 || !isValidDifficulty(难度)) {
+            errors.push({ row: rowNum, id: item.id || '(空)', reason: '难度为空或无效，仅支持 1-5、1星-5星、简单/中等/困难等' });
             return;
         }
         // 确定本条科目：行级「科目」列优先 > 统一 subject 参数 > 空
@@ -132,50 +182,79 @@ const batchImport = async (items, options = {}, actor) => {
             subject = String(item.科目).trim();
         } else if (unifiedSubject) {
             subject = unifiedSubject;
+        } else {
+            errors.push({ row: rowNum, id: item.id || '(空)', reason: '未指定科目，请填写行级科目或选择统一导入科目' });
+            return;
         }
         // 行级科目同样需校验合法性 + 权限
-        if (subject !== null) {
-            if (!isValidSubject(subject)) {
-                errors.push({ row: rowNum, id: item.id, reason: `非法科目「${subject}」` });
-                return;
-            }
-            if (teacherSubjects !== null && !teacherSubjects.includes(subject)) {
-                errors.push({ row: rowNum, id: item.id, reason: `无权导入科目「${subject}」` });
-                return;
-            }
+        if (!isValidSubject(subject)) {
+            errors.push({ row: rowNum, id: item.id || '(空)', reason: `非法科目「${subject}」` });
+            return;
         }
-        // 标准化字段
-        validItems.push({
-            id: String(item.id).trim(),
+        if (teacherSubjects !== null && !teacherSubjects.includes(subject)) {
+            errors.push({ row: rowNum, id: item.id || '(空)', reason: `无权导入科目「${subject}」` });
+            return;
+        }
+        // ID 可选：缺省时按导入批次自动生成，保证唯一
+        const id = String(item.id ?? '').trim() || `IMP${importTime}${String(rowNum).padStart(3, '0')}`;
+        const normalized = {
+            id,
             章节: Number(item.章节) || 0,
-            题型: Number(item.题型) || 2,
+            题型,
             序号: Number(item.序号) || 0,
-            题目: String(item.题目).trim(),
-            选项: item.选项 ? String(item.选项) : '',
-            答案: item.答案 ? String(item.答案) : '',
-            解析: item.解析 ? String(item.解析) : '',
-            难度: item.难度 != null ? String(item.难度) : '',
-            知识点: item.知识点 ? String(item.知识点) : '',
-            使用频度: item.使用频率 != null ? String(item.使用频率) : '0',
-            出题人: item.出题人 ? String(item.出题人) : '',
+            题目,
+            选项: item.选项 ? String(item.选项).trim() : '',
+            答案: item.答案 ? String(item.答案).trim() : '',
+            解析: item.解析 ? String(item.解析).trim() : '',
+            难度,
+            知识点: item.知识点 ? String(item.知识点).trim() : '',
+            使用频度: item.使用频率 ?? item.使用频度 ?? '0',
+            出题人: item.出题人 ? String(item.出题人).trim() : '',
             科目: subject,
-        });
+        };
+        const check = validateQuestionPayload(normalized, { requireAnswer: true });
+        if (!check.valid) {
+            errors.push({ row: rowNum, id, reason: check.errors[0] });
+            return;
+        }
+        normalized.使用频度 = String(normalized.使用频度).trim();
+        validItems.push(normalized);
     });
 
     if (validItems.length === 0) {
         throw makeError('没有有效的题目数据可导入', 400, 40001);
     }
 
+    // 文件内 ID 重复：仅保留第一条，其余计入跳过明细
+    const seen = new Set();
+    const uniqueItems = [];
+    const fileDuplicateItems = [];
+    for (const item of validItems) {
+        if (seen.has(item.id)) {
+            fileDuplicateItems.push(item);
+            continue;
+        }
+        seen.add(item.id);
+        uniqueItems.push(item);
+    }
+
     // 批量查询已存在的 id（单次查询替代 N+1）
-    const allIds = validItems.map((v) => v.id);
+    const allIds = uniqueItems.map((v) => v.id);
     const existingIds = new Set(await questionModel.findExistingIds(allIds));
 
-    const toInsert = validItems.filter((v) => !existingIds.has(v.id));
-    const skipped = validItems.filter((v) => existingIds.has(v.id)).map((v) => ({
-        row: items.findIndex((it) => String(it.id).trim() === v.id) + 1,
-        id: v.id,
-        reason: 'ID 已存在，跳过',
-    }));
+    const toInsert = uniqueItems.filter((v) => !existingIds.has(v.id));
+    const skipped = [
+        ...uniqueItems.filter((v) => existingIds.has(v.id)).map((v) => ({
+            row: items.findIndex((it) => String(it.id).trim() === v.id) + 1,
+            id: v.id,
+            reason: 'ID 已存在，跳过',
+        })),
+        ...fileDuplicateItems.map((v) => ({
+            row: items.findIndex((it) => String(it.id).trim() === v.id) + 1,
+            id: v.id,
+            reason: '文件中 ID 重复，仅保留第一条',
+        })),
+    ];
 
     let insertedCount = 0;
     if (toInsert.length > 0) {
@@ -213,16 +292,7 @@ const batchDelete = async (ids, actor) => {
 
 const getStatistics = async (actor) => {
     const teacherSubjects = await getActorSubjects(actor);
-    const stats = await questionModel.statistics();
-    if (teacherSubjects === null) {
-        return stats;
-    }
-    // 教师：统计仅限自己科目
-    const subjectSet = new Set(teacherSubjects);
-    return {
-        ...stats,
-        bySubject: (stats.bySubject || []).filter((s) => subjectSet.has(s.subject)),
-    };
+    return questionModel.statistics(teacherSubjects);
 };
 
 const searchQuestions = async (keyword, { page, pageSize } = {}, actor) => {
@@ -231,12 +301,8 @@ const searchQuestions = async (keyword, { page, pageSize } = {}, actor) => {
     }
     // 教师：搜索也限定在自己科目内
     const teacherSubjects = await getActorSubjects(actor);
-    if (teacherSubjects !== null && teacherSubjects.length === 0) {
-        return { rows: [], total: 0 };
-    }
-    // 注意：当前 searchByKeyword 不支持科目过滤，这里返回全集给非教师；
-    // 教师场景在前端已按科目隔离题库，搜索入口可按需后续扩展。
-    return questionModel.searchByKeyword(keyword.trim(), { page, pageSize });
+    const subjects = teacherSubjects === null ? null : teacherSubjects;
+    return questionModel.searchByKeyword(keyword.trim(), { page, pageSize, subjects });
 };
 
 module.exports = {

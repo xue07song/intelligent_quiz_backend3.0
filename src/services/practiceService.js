@@ -11,6 +11,22 @@ const makeError = (message, statusCode, errorCode) => {
     return error;
 };
 
+// 学生端试卷不返回答案与解析，避免答题前泄露
+const sanitizeExamForStudent = (exam) => {
+    if (!exam || !Array.isArray(exam.questions)) return exam;
+    exam.questions = exam.questions.map((q) => {
+        const copy = { ...q };
+        delete copy.答案;
+        delete copy.解析;
+        delete copy.correct_answer;
+        delete copy.correctAnswer;
+        delete copy.explanation;
+        delete copy.reference_answer;
+        return copy;
+    });
+    return exam;
+};
+
 // 解析操作者上下文：教师返回所教科目数组；管理员返回 null（不限制）
 const getActorSubjects = async (actor) => {
     if (!actor || actor.role !== 'teacher') return null;
@@ -39,11 +55,14 @@ const resolveExamSubject = async (subject, teacherSubjects) => {
 
 // 随机组卷
 const generateExam = async (userId, options, actor) => {
-    const { 章节, 题型, 难度, count = 10, title, subject, classId } = options;
+    const {
+        章节, 题型, 难度, count = 10, title, subject, classId,
+        status, durationMinutes, startAt, endAt, maxAttempts,
+    } = options;
     const numCount = Number(count) || 10;
 
-    if (numCount < 1 || numCount > 100) {
-        throw makeError('题目数量需在 1-100 之间', 400, 40001);
+    if (!Number.isInteger(numCount) || numCount < 1 || numCount > 100) {
+        throw makeError('题目数量需为 1-100 之间的整数', 400, 40001);
     }
 
     // 科目权限校验：教师组卷必须指定且在自己科目内
@@ -67,6 +86,11 @@ const generateExam = async (userId, options, actor) => {
         questions,
         subject: finalSubject,
         classId: classId || null,
+        status,
+        durationMinutes,
+        startAt,
+        endAt,
+        maxAttempts,
     });
 
     return { examId, title: examTitle, total: questions.length, objectiveCount, questions };
@@ -78,6 +102,16 @@ const getExamInventory = async ({ chapters = [], subject } = {}, actor) => {
     let subjects = [];
     if (teacherSubjects !== null) {
         subjects = teacherSubjects;
+        if (subjects.length === 0) {
+            return {
+                total: 0,
+                byType: {},
+                byDifficulty: {},
+                cross: {},
+                knowledgePoints: [],
+                invalidDifficultyCount: 0,
+            };
+        }
     } else if (subject) {
         subjects = [String(subject).trim()];
     }
@@ -94,6 +128,15 @@ const previewRuleExam = async (options = {}, actor) => {
     let subjects = [];
     if (teacherSubjects !== null) {
         subjects = teacherSubjects;
+        if (subjects.length === 0) {
+            return analyzeRuleExamConfiguration({
+                rawQuestions: [],
+                count: Number(count),
+                typeDistribution,
+                difficultyDistribution,
+                minKnowledgePoints: Number(minKnowledgePoints),
+            });
+        }
     } else if (subject) {
         subjects = [String(subject).trim()];
     }
@@ -111,7 +154,7 @@ const generateRuleExam = async (userId, options = {}, actor) => {
     const {
         title, chapters = [], count = 20,
         typeDistribution, difficultyDistribution, minKnowledgePoints = 1,
-        subject, classId,
+        subject, classId, status, durationMinutes, startAt, endAt, maxAttempts,
     } = options;
     const numCount = Number(count);
     if (!Number.isInteger(numCount) || numCount < 1 || numCount > 100) {
@@ -149,6 +192,11 @@ const generateRuleExam = async (userId, options = {}, actor) => {
         questions,
         subject: finalSubject,
         classId: classId || null,
+        status,
+        durationMinutes,
+        startAt,
+        endAt,
+        maxAttempts,
     });
     return { examId, title: examTitle, total: questions.length, objectiveCount, report, questions };
 };
@@ -177,6 +225,9 @@ const getExam = async (examId, userId, userRole = 'student') => {
     }
     // 学生：只能看教师出的、且对本人班级开放（class_id 为 null 表示全班级开放）的卷子
     if (userRole === 'student' && exam.creator_role === 'teacher') {
+        if (exam.status && exam.status !== 'published') {
+            throw makeError('试卷未发布或已关闭，无法查看', 403, 40301);
+        }
         if (exam.class_id) {
             const classModel = require('../models/classModel');
             // 多对多模式：学生可能在必修班或选修班中，只要在任意班级即可
@@ -193,7 +244,38 @@ const getExam = async (examId, userId, userRole = 'student') => {
     if (!canView) {
         throw makeError('无权查看此试卷', 403, 40301);
     }
+    if (userRole === 'student') {
+        return sanitizeExamForStudent(exam);
+    }
     return exam;
+};
+
+// 学生开始作答：服务端记录开始时间，用于限时与次数控制
+const startExam = async (userId, examId) => {
+    await getExam(examId, userId, 'student');
+    const exam = await practiceModel.findExamById(examId);
+    if (exam.status === 'draft') throw makeError('试卷尚未发布，无法开始答题', 403, 40301);
+    if (exam.status === 'closed') throw makeError('试卷已关闭，无法开始答题', 403, 40301);
+    if (exam.start_at && new Date() < new Date(exam.start_at)) {
+        throw makeError('考试尚未开始', 403, 40301);
+    }
+    if (exam.end_at && new Date() > new Date(exam.end_at)) {
+        throw makeError('考试已截止，无法开始答题', 403, 40301);
+    }
+    if (exam.max_attempts && (await practiceModel.countSubmittedAttempts(examId, userId)) >= Number(exam.max_attempts)) {
+        throw makeError(`已达到最大作答次数（${exam.max_attempts} 次），无法继续答题`, 403, 40301);
+    }
+    const attempt = await practiceModel.startOrResumeAttempt(examId, userId);
+    let remainingSeconds = null;
+    if (exam.duration_minutes && attempt.started_at) {
+        const elapsed = Math.floor((Date.now() - new Date(attempt.started_at).getTime()) / 1000);
+        remainingSeconds = Math.max(0, Number(exam.duration_minutes) * 60 - elapsed);
+    }
+    return {
+        attemptNo: attempt.attempt_no,
+        startedAt: attempt.started_at,
+        remainingSeconds,
+    };
 };
 
 // 提交答卷并自动评分
@@ -202,9 +284,37 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
     if (!exam) {
         throw makeError('试卷不存在', 404, 40401);
     }
-    const canSubmit = userRole === 'student' && exam.creator_role === 'teacher';
+    const canSubmit = userRole === 'student' && (exam.creator_role === 'teacher' || exam.user_id === userId);
     if (!canSubmit) {
         throw makeError('无权提交此试卷', 403, 40301);
+    }
+    if (exam.status === 'draft') {
+        throw makeError('试卷尚未发布，无法提交', 403, 40301);
+    }
+    if (exam.status === 'closed') {
+        throw makeError('试卷已关闭，无法提交', 403, 40301);
+    }
+    if (exam.start_at && new Date() < new Date(exam.start_at)) {
+        throw makeError('考试尚未开始，无法提交', 403, 40301);
+    }
+    if (exam.end_at && new Date() > new Date(exam.end_at)) {
+        throw makeError('考试已截止，无法提交', 403, 40301);
+    }
+    if (exam.max_attempts && (await practiceModel.countSubmittedAttempts(examId, userId)) >= Number(exam.max_attempts)) {
+        throw makeError(`已达到最大作答次数（${exam.max_attempts} 次），无法继续提交`, 403, 40301);
+    }
+    const attempt = await practiceModel.findLatestAttempt(examId, userId);
+    if (!attempt) {
+        throw makeError('请先开始答题', 400, 40001);
+    }
+    if (attempt.submitted_at) {
+        throw makeError('本次作答已提交，请勿重复提交', 409, 40901);
+    }
+    if (exam.duration_minutes && attempt.started_at) {
+        const elapsed = Math.floor((Date.now() - new Date(attempt.started_at).getTime()) / 1000);
+        if (elapsed > Number(exam.duration_minutes) * 60) {
+            throw makeError('答题时间已到，无法提交', 403, 40301);
+        }
     }
     // 班级可见性校验
     if (exam.class_id) {
@@ -257,7 +367,8 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
     // 遍历试卷所有题目判分
     for (const q of exam.questions) {
         const qType = Number(q.题型);
-        const isObjective = [1, 2, 3].includes(qType);
+        // 1判断 2单选 3多选 4填空 均为客观题，与题库客观题口径一致
+        const isObjective = OBJECTIVE_TYPES.includes(qType);
         const userAnswer = userAnswerMap.get(String(q.id));
 
         if (isObjective) objectiveTotal++;
@@ -327,6 +438,7 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
 
     // 提交成功后清理草稿（若草稿不存在则忽略）
     try { await practiceModel.deleteDraft(userId, examId); } catch (_) { /* ignore */ }
+    await practiceModel.markAttemptSubmitted(examId, userId, attempt.attempt_no);
 
     return {
         recordId,
@@ -393,7 +505,11 @@ const checkAnswer = (type, userAnswer, correctAnswer) => {
 
 // 答题记录列表（按角色权限范围查询）
 const getRecords = async (userId, userRole, options) => {
-    return practiceModel.findRecordsByScope({ userId, userRole, ...options });
+    let examIds = null;
+    if (userRole === 'teacher') {
+        examIds = await practiceModel.findExamIdsByUser(userId);
+    }
+    return practiceModel.findRecordsByScope({ userId, userRole, examIds, ...options });
 };
 
 // 答题记录详情（校验所属权）
@@ -409,8 +525,12 @@ const getRecord = async (recordId, userId) => {
 };
 
 // 统计分析
-const getStats = async (userId) => {
-    return practiceModel.getStatistics(userId);
+const getStats = async (userId, userRole) => {
+    let examIds = null;
+    if (userRole === 'teacher') {
+        examIds = await practiceModel.findExamIdsByUser(userId);
+    }
+    return practiceModel.getStatistics(userId, examIds);
 };
 
 // ==================== 答题草稿（学生本人读写） ====================
@@ -507,15 +627,27 @@ const resolveRoleFilter = (callerRole, queryRole) => {
 };
 
 // 管理端：查询所有用户的答题记录列表（含用户信息）
-const adminListRecords = async (callerRole, { role, page, pageSize } = {}) => {
+const adminListRecords = async (callerRole, callerId, { role, page, pageSize, examId } = {}) => {
     const finalRole = resolveRoleFilter(callerRole, role);
-    return practiceModel.findRecordsByRole({ role: finalRole, page, pageSize });
+    const scope = {};
+    if (callerRole === 'teacher') {
+        scope.examIds = await practiceModel.findExamIdsByUser(callerId);
+        if (examId && !scope.examIds.includes(examId)) {
+            throw makeError('只能查看自己发布的试卷的答题记录', 403, 40301);
+        }
+    }
+    if (examId) scope.examId = examId;
+    return practiceModel.findRecordsByRole({ role: finalRole, page, pageSize, ...scope });
 };
 
 // 管理端：查询有做题记录的用户列表（含统计汇总，按角色区分）
-const adminListUsers = async (callerRole, { role } = {}) => {
+const adminListUsers = async (callerRole, callerId, { role } = {}) => {
     const finalRole = resolveRoleFilter(callerRole, role);
-    const users = await practiceModel.findUsersWithRecords({ role: finalRole });
+    let examIds = null;
+    if (callerRole === 'teacher') {
+        examIds = await practiceModel.findExamIdsByUser(callerId);
+    }
+    const users = await practiceModel.findUsersWithRecords({ role: finalRole, examIds });
     // 按 role 分组返回，方便前端展示
     const grouped = { student: [], teacher: [], admin: [] };
     users.forEach((u) => {
@@ -525,35 +657,43 @@ const adminListUsers = async (callerRole, { role } = {}) => {
 };
 
 // 管理端：查询指定用户的答题记录列表
-const adminListUserRecords = async (callerRole, targetUserId, { page, pageSize } = {}) => {
+const adminListUserRecords = async (callerRole, callerId, targetUserId, { page, pageSize } = {}) => {
     // 教师只能查看学生记录，需校验目标用户角色
+    let examIds = null;
     if (callerRole === 'teacher') {
         const targetUser = await practiceModel.findUserById(targetUserId);
         if (!targetUser || targetUser.role !== 'student') {
             throw makeError('教师只能查看学生的做题记录', 403, 40301);
         }
+        examIds = await practiceModel.findExamIdsByUser(callerId);
     }
-    return practiceModel.findRecordsByUserId(targetUserId, { page, pageSize });
+    return practiceModel.findRecordsByUserId(targetUserId, { page, pageSize, examIds });
 };
 
 // 管理端：查询指定用户的统计分析
-const adminGetUserStats = async (callerRole, targetUserId) => {
+const adminGetUserStats = async (callerRole, callerId, targetUserId) => {
+    let examIds = null;
     if (callerRole === 'teacher') {
         const targetUser = await practiceModel.findUserById(targetUserId);
         if (!targetUser || targetUser.role !== 'student') {
             throw makeError('教师只能查看学生的统计数据', 403, 40301);
         }
+        examIds = await practiceModel.findExamIdsByUser(callerId);
     }
-    return practiceModel.getUserStatistics(targetUserId);
+    return practiceModel.getUserStatistics(targetUserId, examIds);
 };
 
 // 管理端：查看任意答题记录详情（教师可查看 teacher+student 的记录，管理员查看所有人）
-const adminGetRecord = async (callerRole, recordId) => {
+const adminGetRecord = async (callerRole, callerId, recordId) => {
     const record = await practiceModel.findRecordById(recordId);
     if (!record) {
         throw makeError('答题记录不存在', 404, 40401);
     }
     if (callerRole === 'teacher') {
+        const exam = await practiceModel.findExamById(record.exam_id);
+        if (!exam || exam.user_id !== callerId) {
+            throw makeError('只能查看自己发布的试卷的答题记录', 403, 40301);
+        }
         const targetUser = await practiceModel.findUserById(record.user_id);
         if (!targetUser || (targetUser.role !== 'student' && targetUser.role !== 'teacher')) {
             throw makeError('教师只能查看教师和学生的答题记录', 403, 40301);
@@ -563,22 +703,127 @@ const adminGetRecord = async (callerRole, recordId) => {
 };
 
 const reviewSubjectiveAnswer = async (reviewerId, answerId, body = {}) => {
+    const answer = await practiceModel.findAnswerRecord(answerId);
+    if (!answer) throw Object.assign(new Error('该答案不存在或已删除'), { statusCode: 404, errorCode: 40401 });
+    if (![4, 5, 6].includes(Number(answer.question_type))) {
+        throw Object.assign(new Error('该答案不支持人工复核'), { statusCode: 404, errorCode: 40401 });
+    }
+    const record = await practiceModel.findRecordById(answer.record_id);
+    if (!record) throw Object.assign(new Error('答题记录不存在'), { statusCode: 404, errorCode: 40401 });
+    const exam = await practiceModel.findExamById(record.exam_id);
+    if (!exam) throw Object.assign(new Error('试卷不存在'), { statusCode: 404, errorCode: 40401 });
+    if (exam.user_id !== reviewerId) {
+        throw Object.assign(new Error('只能复核自己发布的试卷中的主观题'), { statusCode: 403, errorCode: 40301 });
+    }
     const allowed = ['correct', 'partial', 'incorrect'];
     const status = String(body.status || '');
     if (!allowed.includes(status)) throw Object.assign(new Error('请选择有效的复核结果'), { statusCode: 400 });
     const fullScore = Math.max(0.01, Number(body.fullScore) || 1);
-    const awardedScore = status === 'correct' ? fullScore : status === 'incorrect' ? 0 : Math.max(0, Math.min(fullScore, Number(body.awardedScore) || 0));
-    const scoreRate = awardedScore / fullScore;
+    let awardedScore;
+    if (status === 'correct') {
+        awardedScore = fullScore;
+    } else if (status === 'incorrect') {
+        awardedScore = 0;
+    } else {
+        awardedScore = Number(body.awardedScore);
+        if (!Number.isFinite(awardedScore) || awardedScore <= 0 || awardedScore > fullScore) {
+            throw Object.assign(new Error('部分正确时必须填写 0 到满分之间的得分'), { statusCode: 400 });
+        }
+    }
+    const scoreRate = Math.round((awardedScore / fullScore) * 10000) / 10000;
     const result = await practiceModel.reviewAnswer({ answerId, reviewerId, status, scoreRate, comment: String(body.comment || '').trim().slice(0, 500) });
     if (!result) throw Object.assign(new Error('该答案不存在或不支持复核'), { statusCode: 404 });
     return result;
 };
 
+const reviewAdaptiveAnswer = async (reviewerId, answerId, body = {}) => {
+    const allowed = ['correct', 'partial', 'incorrect'];
+    const status = String(body.status || '');
+    if (!allowed.includes(status)) throw makeError('请选择有效的复核结果', 400, 40001);
+    const adaptiveModel = require('../models/adaptivePracticeModel');
+    const answer = await adaptiveModel.findAdaptiveAnswerById(answerId);
+    if (!answer) throw makeError('自适应答题记录不存在', 404, 40401);
+    if (![4, 5, 6].includes(Number(answer.question_type))) {
+        throw makeError('该题不支持人工复核', 404, 40401);
+    }
+    const fullScore = Math.max(0.01, Number(body.fullScore) || 1);
+    let scoreRate;
+    if (status === 'correct') {
+        scoreRate = 1;
+    } else if (status === 'incorrect') {
+        scoreRate = 0;
+    } else {
+        const awardedScore = Number(body.awardedScore);
+        if (!Number.isFinite(awardedScore) || awardedScore <= 0 || awardedScore > fullScore) {
+            throw makeError('部分正确时必须填写 0 到满分之间的得分', 400, 40001);
+        }
+        scoreRate = Math.round((awardedScore / fullScore) * 10000) / 10000;
+    }
+    return adaptiveModel.reviewAdaptiveAnswer({
+        id: answerId,
+        reviewerId,
+        status,
+        scoreRate,
+        comment: String(body.comment || '').trim().slice(0, 500),
+    });
+};
+
+const listAdaptiveReview = async (options = {}) => {
+    const adaptiveModel = require('../models/adaptivePracticeModel');
+    return adaptiveModel.listReviewAnswers(options);
+};
+
+const updateExamSettings = async (actor, examId, data = {}) => {
+    const exam = await practiceModel.findExamById(examId);
+    if (!exam) throw makeError('试卷不存在', 404, 40401);
+    if (actor.role !== 'admin' && exam.user_id !== actor.id) {
+        throw makeError('只能编辑自己创建的试卷', 403, 40301);
+    }
+    const allowed = {};
+    if (data.title !== undefined) allowed.title = String(data.title).trim() || exam.title;
+    if (data.durationMinutes !== undefined) allowed.durationMinutes = data.durationMinutes ? Number(data.durationMinutes) : null;
+    if (data.startAt !== undefined) allowed.startAt = data.startAt || null;
+    if (data.endAt !== undefined) allowed.endAt = data.endAt || null;
+    if (data.maxAttempts !== undefined) allowed.maxAttempts = data.maxAttempts ? Number(data.maxAttempts) : null;
+    if (data.classId !== undefined) allowed.classId = data.classId ? Number(data.classId) : null;
+    await practiceModel.updateExam(examId, allowed);
+    return practiceModel.findExamById(examId);
+};
+
+const updateExamStatus = async (actor, examId, status) => {
+    const allowedStatus = ['draft', 'published', 'closed'];
+    if (!allowedStatus.includes(status)) throw makeError('无效的试卷状态', 400, 40001);
+    const exam = await practiceModel.findExamById(examId);
+    if (!exam) throw makeError('试卷不存在', 404, 40401);
+    if (actor.role !== 'admin' && exam.user_id !== actor.id) {
+        throw makeError('只能管理自己创建的试卷', 403, 40301);
+    }
+    await practiceModel.updateExamStatus(examId, status);
+    return practiceModel.findExamById(examId);
+};
+
+const deleteExam = async (actor, examId) => {
+    const exam = await practiceModel.findExamById(examId);
+    if (!exam) throw makeError('试卷不存在', 404, 40401);
+    if (actor.role !== 'admin' && exam.user_id !== actor.id) {
+        throw makeError('只能删除自己创建的试卷', 403, 40301);
+    }
+    const count = await practiceModel.countExamRecords(examId);
+    if (count > 0) {
+        throw makeError('该试卷已有作答记录，只能关闭，不能删除', 409, 40901);
+    }
+    return practiceModel.removeExam(examId);
+};
+
 // 管理端：以人为界的全局统计总览
 // 返回所有有答题记录的用户（按角色过滤），每人含：个人汇总（基于全部记录） + 最近 N 次答题明细
-const adminGetAllStatsByUser = async (callerRole, { role } = {}) => {
+const adminGetAllStatsByUser = async (callerRole, callerId, { role } = {}) => {
     const finalRole = resolveRoleFilter(callerRole, role);
-    const records = await practiceModel.findAllRecordsWithUser({ role: finalRole });
+    let examIds = null;
+    if (callerRole === 'teacher') {
+        examIds = await practiceModel.findExamIdsByUser(callerId);
+    }
+    const records = await practiceModel.findAllRecordsWithUser({ role: finalRole, examIds });
 
     // 按 user_id 分组，同时累计全量汇总
     const userMap = new Map();
@@ -684,12 +929,16 @@ module.exports = {
     generateRuleExam,
     getExams,
     getExam,
+    startExam,
     submitExam,
     getRecords,
     getRecord,
     getStats,
     getExamDraft,
     saveExamDraft,
+    updateExamSettings,
+    updateExamStatus,
+    deleteExam,
     listWrongQuestions,
     createWrongExam,
     adminListRecords,
@@ -698,6 +947,8 @@ module.exports = {
     adminGetUserStats,
     adminGetRecord,
     reviewSubjectiveAnswer,
+    reviewAdaptiveAnswer,
+    listAdaptiveReview,
     adminGetAllStatsByUser,
     getExamAnalytics,
     getQuestionDetail,
