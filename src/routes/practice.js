@@ -64,26 +64,19 @@ router.get('/statistics', practiceController.statistics);
 router.get('/wrong-questions', requireRoles('student'), practiceController.wrongQuestions);
 router.post('/wrong-exams', requireRoles('student'), practiceController.wrongExam);
 
+// 单题练习：根据题目ID生成练习
+router.post('/single-question', requireRoles('student', 'teacher'), practiceController.startSingleQuestionPractice);
+
+// ===== 单题判题（不创建试卷，不记录） =====
+router.post('/single-question/check', requireRoles('student', 'teacher'), practiceController.checkSingleQuestion);
+
 // ==================== 管理端接口（教师/管理员）====================
-// 教师只能查看学生数据；管理员可查看所有人并按角色筛选
-
-// 有做题记录的用户列表（按角色分组，含统计汇总）
 router.get('/admin/users', requireRoles('admin', 'teacher'), practiceController.adminListUsers);
-
-// 所有用户答题记录列表（可按角色筛选）
 router.get('/admin/records', requireRoles('admin', 'teacher'), practiceController.adminListRecords);
-
-// 查看任意答题记录详情
 router.get('/admin/records/:id', requireRoles('admin', 'teacher'), practiceController.adminGetRecord);
 router.put('/admin/answers/:answerId/review', requireRoles('teacher'), practiceController.reviewSubjectiveAnswer);
-
-// 查看指定用户的答题记录列表
 router.get('/admin/users/:userId/records', requireRoles('admin', 'teacher'), practiceController.adminListUserRecords);
-
-// 查看指定用户的统计分析
 router.get('/admin/users/:userId/statistics', requireRoles('admin', 'teacher'), practiceController.adminGetUserStats);
-
-// 以人为界的全局统计总览（每人含汇总 + 最近 N 次答题明细）
 router.get('/admin/stats/all', requireRoles('admin', 'teacher'), practiceController.adminGetAllStats);
 
 module.exports = router;
