@@ -1,4 +1,5 @@
 const model = require('../models/adaptivePracticeModel');
+const practiceModel = require('../models/practiceModel'); // ===== [新增] =====
 const { difficultyGroup, evaluateDifficulty } = require('../algorithms/difficultyAdjustment');
 const subjectiveEvaluation = require('./subjectiveEvaluationService');
 
@@ -116,6 +117,64 @@ const checkAnswer = (type, userAnswer, correctAnswer) => {
     return String(userAnswer || '').trim().toUpperCase() === String(correctAnswer || '').trim().toUpperCase();
 };
 
+// ================================================================
+// [新增] 同步自适应练习数据到 exam_records 表
+// ================================================================
+const syncToExamRecords = async (userId, session, updatedSession) => {
+    try {
+        // 获取所有答题记录
+        const answers = await model.findAnswers(session.id);
+        if (!answers.length) return;
+
+        const totalCount = Number(session.planned_count);
+        const answeredCount = Number(updatedSession.answered_count || answers.length);
+        const correctCount = Number(updatedSession.correct_count || answers.filter(a => a.is_correct === 1).length);
+        const wrongCount = answeredCount - correctCount;
+        const skippedCount = totalCount - answeredCount;
+        const accuracy = totalCount > 0 ? Math.round((correctCount / totalCount) * 10000) / 100 : 0;
+        const score = accuracy;
+
+        // 计算用时（从创建到完成）
+        const startTime = new Date(session.created_at);
+        const endTime = new Date();
+        const durationSeconds = Math.floor((endTime - startTime) / 1000);
+
+        // 构建 exam_records 数据
+        const recordData = {
+            examId: null,
+            userId,
+            startedAt: session.created_at,
+            durationSeconds: Math.max(0, durationSeconds),
+            totalCount,
+            answeredCount,
+            correctCount,
+            wrongCount,
+            skippedCount,
+            objectiveTotal: answers.filter(a => [1, 2, 3].includes(a.question_type)).length,
+            objectiveCorrect: answers.filter(a => [1, 2, 3].includes(a.question_type) && a.is_correct === 1).length,
+            accuracy,
+            score,
+            answers: answers.map(a => ({
+                questionId: a.question_id,
+                questionType: a.question_type,
+                userAnswer: a.user_answer || '',
+                correctAnswer: a.correct_answer || '',
+                isObjective: [1, 2, 3].includes(a.question_type) ? 1 : 0,
+                isCorrect: a.is_correct,
+                evaluation: null,
+            })),
+        };
+
+        // 写入 exam_records
+        const recordId = await practiceModel.createRecord(recordData);
+        console.log(`[自适应练习] 已同步到 exam_records，记录ID: ${recordId}`);
+    } catch (err) {
+        // 同步失败不影响主流程，只记录日志
+        console.error('[自适应练习] 同步到 exam_records 失败:', err.message);
+    }
+};
+// ================================================================
+
 const submit = async (userId, sessionId, body = {}) => {
     const session = await model.findSession(sessionId, userId);
     if (!session) throw Object.assign(new Error('练习不存在或无权访问'), { statusCode: 404 });
@@ -152,6 +211,13 @@ const submit = async (userId, sessionId, body = {}) => {
     });
     const updated = await model.findSession(session.id, userId);
     const following = saved.complete ? null : await model.findNextQuestion(updated);
+
+    // ===== [新增] 如果练习完成，同步数据到 exam_records =====
+    if (saved.complete) {
+        await syncToExamRecords(userId, session, updated);
+    }
+    // ==============================================================
+
     return { isCorrect: correct, evaluation, correctAnswer: currentQuestion.答案, explanation: currentQuestion.解析,
         progress: { answered: saved.sequence, total: Number(session.planned_count) },
         state: { ...adjustment, difficultyLabel: difficultyGroup(adjustment.difficulty), recentResults },
@@ -165,8 +231,8 @@ const getSession = async (userId, sessionId) => {
     const answers = await model.findAnswers(session.id);
     const next = session.status === 'active' ? await model.findNextQuestion(session) : null;
     return { session, answers, summary: { accuracy: session.answered_count ? Math.round(session.correct_count / session.answered_count * 100) : 0,
-        initialDifficulty: session.initial_difficulty, currentDifficulty: session.current_difficulty,
-        trajectory: answers.map((item) => item.difficulty_after) },
+            initialDifficulty: session.initial_difficulty, currentDifficulty: session.current_difficulty,
+            trajectory: answers.map((item) => item.difficulty_after) },
         question: next ? publicQuestion(next.question) : null, fallbackMessage: next?.fallbackMessage || '' };
 };
 

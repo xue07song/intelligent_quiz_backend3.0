@@ -44,7 +44,6 @@ const generateRule = async (req, res, next) => {
     }
 };
 
-// 试卷列表（教师按 subject/classId 过滤自己的卷子；学生自动只看本班级+全开放卷子）
 const listExams = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -61,7 +60,6 @@ const listExams = async (req, res, next) => {
     }
 };
 
-// 试卷详情
 const getExam = async (req, res, next) => {
     try {
         const exam = await practiceService.getExam(req.params.id, req.user.id, req.user.role);
@@ -71,43 +69,6 @@ const getExam = async (req, res, next) => {
     }
 };
 
-// 学生开始作答（服务端记录开始时间）
-const startExam = async (req, res, next) => {
-    try {
-        res.json(success(await practiceService.startExam(req.user.id, req.params.id)));
-    } catch (err) {
-        next(err);
-    }
-};
-
-// 编辑试卷设置（标题/时限/截止/次数/班级）
-const updateExam = async (req, res, next) => {
-    try {
-        res.json(success(await practiceService.updateExamSettings(req.user, req.params.id, req.body)));
-    } catch (err) {
-        next(err);
-    }
-};
-
-// 发布/关闭试卷
-const updateExamStatus = async (req, res, next) => {
-    try {
-        res.json(success(await practiceService.updateExamStatus(req.user, req.params.id, req.body.status)));
-    } catch (err) {
-        next(err);
-    }
-};
-
-// 删除无作答记录的试卷
-const removeExam = async (req, res, next) => {
-    try {
-        res.json(success(await practiceService.deleteExam(req.user, req.params.id), '试卷已删除'));
-    } catch (err) {
-        next(err);
-    }
-};
-
-// 提交答卷
 const submit = async (req, res, next) => {
     try {
         const result = await practiceService.submitExam(req.user.id, req.user.role, req.params.id, req.body);
@@ -117,7 +78,6 @@ const submit = async (req, res, next) => {
     }
 };
 
-// 答题记录列表（按角色权限范围：学生仅本人，教师看师生，管理员看全部）
 const listRecords = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -129,7 +89,6 @@ const listRecords = async (req, res, next) => {
     }
 };
 
-// 答题记录详情
 const getRecord = async (req, res, next) => {
     try {
         const record = await practiceService.getRecord(req.params.id, req.user.id);
@@ -139,7 +98,6 @@ const getRecord = async (req, res, next) => {
     }
 };
 
-// 统计分析
 const statistics = async (req, res, next) => {
     try {
         const stats = await practiceService.getStats(req.user.id, req.user.role);
@@ -149,7 +107,6 @@ const statistics = async (req, res, next) => {
     }
 };
 
-// 错题本列表
 const wrongQuestions = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -166,7 +123,6 @@ const wrongQuestions = async (req, res, next) => {
     }
 };
 
-// 错题重练：基于错题重新组卷
 const wrongExam = async (req, res, next) => {
     try {
         const result = await practiceService.createWrongExam(req.user.id, req.body);
@@ -176,23 +132,51 @@ const wrongExam = async (req, res, next) => {
     }
 };
 
+const startSingleQuestionPractice = async (req, res, next) => {
+    try {
+        const { questionId } = req.body;
+        if (!questionId) {
+            const err = new Error('题目ID不能为空');
+            err.statusCode = 400;
+            throw err;
+        }
+        const result = await practiceService.startSingleQuestionPractice(req.user.id, questionId);
+        res.status(201).json(success(result, '✅ 单题练习已开始'));
+    } catch (err) {
+        next(err);
+    }
+};
+
+// ===== 单题判题（不创建试卷，不记录） =====
+const checkSingleQuestion = async (req, res, next) => {
+    try {
+        const { questionId, userAnswer } = req.body;
+        if (!questionId) {
+            const err = new Error('题目ID不能为空');
+            err.statusCode = 400;
+            throw err;
+        }
+        const result = await practiceService.checkSingleQuestion(questionId, userAnswer);
+        res.json(success(result, '判题完成'));
+    } catch (err) {
+        next(err);
+    }
+};
+
 // ==================== 管理端接口 ====================
 
-// 管理端：所有用户答题记录列表（可按角色筛选）
 const adminListRecords = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const pageSize = parseInt(req.query.pageSize) || 20;
-        const role = req.query.role; // student / teacher（仅管理员可传，教师强制为 student）
-        const examId = req.query.examId ? Number(req.query.examId) : null;
-        const result = await practiceService.adminListRecords(req.user.role, req.user.id, { role, page, pageSize, examId });
+        const role = req.query.role;
+        const result = await practiceService.adminListRecords(req.user.role, { role, page, pageSize });
         res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) {
         next(err);
     }
 };
 
-// 管理端：有做题记录的用户列表（按角色分组，含统计汇总）
 const adminListUsers = async (req, res, next) => {
     try {
         const role = req.query.role;
@@ -203,7 +187,6 @@ const adminListUsers = async (req, res, next) => {
     }
 };
 
-// 管理端：查看指定用户的答题记录列表
 const adminListUserRecords = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -215,7 +198,6 @@ const adminListUserRecords = async (req, res, next) => {
     }
 };
 
-// 管理端：查看指定用户的统计分析
 const adminGetUserStats = async (req, res, next) => {
     try {
         const stats = await practiceService.adminGetUserStats(req.user.role, req.user.id, req.params.userId);
@@ -225,7 +207,6 @@ const adminGetUserStats = async (req, res, next) => {
     }
 };
 
-// 管理端：查看任意答题记录详情
 const adminGetRecord = async (req, res, next) => {
     try {
         const record = await practiceService.adminGetRecord(req.user.role, req.user.id, req.params.id);
@@ -237,7 +218,6 @@ const adminGetRecord = async (req, res, next) => {
 
 const reviewSubjectiveAnswer = async (req, res, next) => {
     try {
-        // 管理员只能查看答题记录和最终结果，不能修改学生成绩
         if (req.user.role === 'admin') {
             return next(Object.assign(new Error('管理员无权复核主观题答案'), { statusCode: 403 }));
         }
@@ -245,29 +225,6 @@ const reviewSubjectiveAnswer = async (req, res, next) => {
     } catch (err) { next(err); }
 };
 
-const reviewAdaptiveAnswer = async (req, res, next) => {
-    try {
-        if (req.user.role === 'admin') {
-            return next(Object.assign(new Error('管理员无权复核自适应主观题答案'), { statusCode: 403 }));
-        }
-        res.json(success(await practiceService.reviewAdaptiveAnswer(req.user.id, req.params.answerId, req.body), '复核结果已保存'));
-    } catch (err) { next(err); }
-};
-
-const listAdaptiveReview = async (req, res, next) => {
-    try {
-        const page = parseInt(req.query.page) || 1;
-        const pageSize = parseInt(req.query.pageSize) || 20;
-        const result = await practiceService.listAdaptiveReview({
-            status: req.query.status || 'pending',
-            page,
-            pageSize,
-        });
-        res.json(paginated(result.rows, result.total, page, pageSize));
-    } catch (err) { next(err); }
-};
-
-// 草稿：获取
 const getExamDraft = async (req, res, next) => {
     try {
         const examId = Number(req.params.id);
@@ -275,7 +232,6 @@ const getExamDraft = async (req, res, next) => {
     } catch (err) { next(err); }
 };
 
-// 草稿：保存（含续时）
 const saveExamDraft = async (req, res, next) => {
     try {
         const examId = Number(req.params.id);
@@ -283,7 +239,6 @@ const saveExamDraft = async (req, res, next) => {
     } catch (err) { next(err); }
 };
 
-// 管理端：以人为界的全局统计总览（每人含汇总 + 最近 N 次答题明细）
 const adminGetAllStats = async (req, res, next) => {
     try {
         const role = req.query.role;
@@ -294,7 +249,6 @@ const adminGetAllStats = async (req, res, next) => {
     }
 };
 
-// 试卷维度分析（每题正确率 + 学生成绩 + 整体统计 + 班级对比 + 分数段）
 const examAnalytics = async (req, res, next) => {
     try {
         const result = await practiceService.getExamAnalytics(req.user, req.params.id, req.query.classId);
@@ -304,7 +258,6 @@ const examAnalytics = async (req, res, next) => {
     }
 };
 
-// 单题详情：某试卷某道题每个学生的作答情况
 const questionDetail = async (req, res, next) => {
     try {
         const result = await practiceService.getQuestionDetail(req.user, req.params.id, req.params.questionId);
@@ -333,11 +286,30 @@ const exportExam = async (req, res, next) => {
 };
 
 module.exports = {
-
-    generate, inventory, previewRule, generateRule, listExams, getExam, startExam, updateExam, updateExamStatus, removeExam,
-    submit, listRecords, getRecord, statistics,
-    getExamDraft, saveExamDraft, wrongQuestions, wrongExam,
-
-    adminListRecords, adminListUsers, adminListUserRecords, adminGetUserStats, adminGetRecord, adminGetAllStats,
-    reviewSubjectiveAnswer, reviewAdaptiveAnswer, listAdaptiveReview, examAnalytics, questionDetail, exportExam,
+    generate,
+    inventory,
+    previewRule,
+    generateRule,
+    listExams,
+    getExam,
+    submit,
+    listRecords,
+    getRecord,
+    statistics,
+    getExamDraft,
+    saveExamDraft,
+    wrongQuestions,
+    wrongExam,
+    startSingleQuestionPractice,
+    checkSingleQuestion,
+    adminListRecords,
+    adminListUsers,
+    adminListUserRecords,
+    adminGetUserStats,
+    adminGetRecord,
+    adminGetAllStats,
+    reviewSubjectiveAnswer,
+    examAnalytics,
+    questionDetail,
+    exportExam,
 };

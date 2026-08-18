@@ -66,9 +66,9 @@ const findRuleExamCandidates = async ({ chapters = [], subjects = [] } = {}) => 
     const [rows] = await pool.query(
         `SELECT q.*, COUNT(eq.id) AS used_count
          FROM ${QT_TABLE} q
-         LEFT JOIN \`exam_questions\` eq
-           ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
-         ${where}
+                  LEFT JOIN \`exam_questions\` eq
+                            ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+             ${where}
          GROUP BY q.id
          ORDER BY q.章节, q.题型, q.序号`,
         params
@@ -260,9 +260,7 @@ const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, sub
     );
     const [rows] = await pool.query(
         `SELECT e.*, u.nickname creator_name, u.username creator_username, u.role creator_role,
-         (SELECT COUNT(*) FROM exam_records r WHERE ${userRole === 'admin' && !classId ? '1=1' : 'r.exam_id=e.id'}
-           ${userRole === 'admin' && classId ? 'AND EXISTS (SELECT 1 FROM student_classes sc WHERE sc.student_id = r.user_id AND sc.class_id = ?)' : ''}
-         ) attempt_count
+                (SELECT COUNT(*) FROM exam_records r WHERE r.exam_id=e.id) attempt_count
          FROM exams e INNER JOIN users u ON u.id=e.user_id ${where}
          ORDER BY e.id DESC LIMIT ? OFFSET ?`,
         [...(userRole === 'admin' && classId ? [Number(classId)] : []), ...params, pageSize, offset]
@@ -279,14 +277,8 @@ const findExamById = async (examId) => {
     const exam = examRows[0];
 
     const [qRows] = await pool.query(
-        `SELECT eq.id AS eq_id, eq.exam_id AS eq_exam_id, eq.question_id AS question_id,
-                eq.sort_order,
-                eq.snapshot_章节, eq.snapshot_题型, eq.snapshot_序号,
-                eq.snapshot_题目, eq.snapshot_选项, eq.snapshot_答案, eq.snapshot_解析,
-                eq.snapshot_难度, eq.snapshot_知识点,
-                q.*
-         FROM \`exam_questions\` eq
-         LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+        `SELECT eq.sort_order, q.* FROM \`exam_questions\` eq
+                                            LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
          WHERE eq.exam_id = ? ORDER BY eq.sort_order`,
         [examId]
     );
@@ -334,95 +326,103 @@ const findQuestionsByIds = async (ids) => {
     return rows;
 };
 
-// 错题本：统计当前用户做错的题目数
+// ================================================================
+// [修改] 错题本：统计当前用户最近一次做错的题目数
+// ================================================================
 const countWrongQuestions = async (userId, { chapter, questionType } = {}) => {
-    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    let sql = `
+        SELECT COUNT(*) AS total
+        FROM (
+                 SELECT a.question_id, MAX(a.id) AS max_id
+                 FROM exam_answers a
+                          JOIN exam_records r ON a.record_id = r.id
+                 WHERE r.user_id = ?
+                 GROUP BY a.question_id
+             ) latest
+                 JOIN exam_answers a ON a.id = latest.max_id
+                 JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+        WHERE a.is_correct = 0
+    `;
     const params = [userId];
     if (chapter !== undefined && chapter !== '' && chapter !== null) {
-        conditions.push('COALESCE(eq.snapshot_章节, q.章节) = ?');
+        sql += ` AND q.章节 = ?`;
         params.push(chapter);
     }
     if (questionType !== undefined && questionType !== '' && questionType !== null) {
-        conditions.push('COALESCE(eq.snapshot_题型, q.题型) = ?');
+        sql += ` AND q.题型 = ?`;
         params.push(Number(questionType));
     }
-    const [rows] = await pool.query(
-        `SELECT COUNT(DISTINCT a.question_id) AS total
-         FROM \`exam_answers\` a
-         INNER JOIN \`exam_records\` r ON a.record_id = r.id
-         LEFT JOIN \`exam_questions\` eq ON eq.exam_id = r.exam_id AND eq.question_id = a.question_id
-         LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
-         WHERE ${conditions.join(' AND ')}`,
-        params
-    );
+    const [rows] = await pool.query(sql, params);
     return rows[0].total;
 };
 
-// 错题本：分页列出错题
+// ================================================================
+// [修改] 错题本：分页列出错题（仅最近一次作答为错误的题目）
+// ================================================================
 const findWrongQuestions = async (userId, { page = 1, pageSize = 20, chapter, questionType } = {}) => {
-    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    const offset = (page - 1) * pageSize;
+    let sql = `
+        SELECT q.id, q.章节 AS chapter, q.题型 AS question_type, q.题目 AS title,
+               q.选项 AS options, q.难度 AS difficulty, q.知识点 AS knowledge_point,
+               q.答案 AS correct_answer,
+               a.is_correct, a.user_answer, a.correct_answer AS last_correct_answer,
+               r2.submitted_at AS last_wrong_at
+        FROM (
+                 SELECT a.question_id, MAX(a.id) AS max_id
+                 FROM exam_answers a
+                          JOIN exam_records r ON a.record_id = r.id
+                 WHERE r.user_id = ?
+                 GROUP BY a.question_id
+             ) latest
+                 JOIN exam_answers a ON a.id = latest.max_id
+                 JOIN exam_records r2 ON a.record_id = r2.id
+                 JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+        WHERE a.is_correct = 0
+    `;
     const params = [userId];
     if (chapter !== undefined && chapter !== '' && chapter !== null) {
-        conditions.push('COALESCE(eq.snapshot_章节, q.章节) = ?');
+        sql += ` AND q.章节 = ?`;
         params.push(chapter);
     }
     if (questionType !== undefined && questionType !== '' && questionType !== null) {
-        conditions.push('COALESCE(eq.snapshot_题型, q.题型) = ?');
+        sql += ` AND q.题型 = ?`;
         params.push(Number(questionType));
     }
-    const offset = (page - 1) * pageSize;
-    const [rows] = await pool.query(
-        `SELECT a.question_id AS id, COALESCE(eq.snapshot_章节, q.章节) AS chapter,
-                COALESCE(eq.snapshot_题型, q.题型) AS question_type,
-                COALESCE(eq.snapshot_题目, q.题目) AS title,
-                COALESCE(eq.snapshot_选项, q.选项) AS options,
-                COALESCE(eq.snapshot_难度, q.难度) AS difficulty,
-                COALESCE(eq.snapshot_知识点, q.知识点) AS knowledge_point,
-                COALESCE(eq.snapshot_答案, q.答案) AS correct_answer, COUNT(a.id) AS wrong_count,
-                MAX(r.submitted_at) AS last_wrong_at
-         FROM \`exam_answers\` a
-         INNER JOIN \`exam_records\` r ON a.record_id = r.id
-         LEFT JOIN \`exam_questions\` eq ON eq.exam_id = r.exam_id AND eq.question_id = a.question_id
-         LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
-         WHERE ${conditions.join(' AND ')}
-         GROUP BY a.question_id,
-                  COALESCE(eq.snapshot_章节, q.章节),
-                  COALESCE(eq.snapshot_题型, q.题型),
-                  COALESCE(eq.snapshot_题目, q.题目),
-                  COALESCE(eq.snapshot_选项, q.选项),
-                  COALESCE(eq.snapshot_难度, q.难度),
-                  COALESCE(eq.snapshot_知识点, q.知识点),
-                  COALESCE(eq.snapshot_答案, q.答案)
-         ORDER BY last_wrong_at DESC
-         LIMIT ? OFFSET ?`,
-        [...params, pageSize, offset]
-    );
+    sql += ` ORDER BY r2.submitted_at DESC LIMIT ? OFFSET ?`;
+    params.push(pageSize, offset);
+    const [rows] = await pool.query(sql, params);
     return rows;
 };
 
-// 错题本：获取全部错题 id（用于错题重练）
+// ================================================================
+// [修改] 错题本：获取全部错题 id（用于错题重练）
+// ================================================================
 const findWrongQuestionIds = async (userId, { chapter, questionType } = {}) => {
-    const conditions = ['r.user_id = ?', 'a.is_correct = 0'];
+    let sql = `
+        SELECT q.id
+        FROM (
+            SELECT a.question_id, MAX(a.id) AS max_id
+            FROM exam_answers a
+            JOIN exam_records r ON a.record_id = r.id
+            WHERE r.user_id = ?
+            GROUP BY a.question_id
+        ) latest
+        JOIN exam_answers a ON a.id = latest.max_id
+        JOIN exam_records r2 ON a.record_id = r2.id
+        JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+        WHERE a.is_correct = 0
+    `;
     const params = [userId];
     if (chapter !== undefined && chapter !== '' && chapter !== null) {
-        conditions.push('COALESCE(eq.snapshot_章节, q.章节) = ?');
+        sql += ` AND q.章节 = ?`;
         params.push(chapter);
     }
     if (questionType !== undefined && questionType !== '' && questionType !== null) {
-        conditions.push('COALESCE(eq.snapshot_题型, q.题型) = ?');
+        sql += ` AND q.题型 = ?`;
         params.push(Number(questionType));
     }
-    const [rows] = await pool.query(
-        `SELECT a.question_id AS id
-         FROM \`exam_answers\` a
-         INNER JOIN \`exam_records\` r ON a.record_id = r.id
-         LEFT JOIN \`exam_questions\` eq ON eq.exam_id = r.exam_id AND eq.question_id = a.question_id
-         LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
-         WHERE ${conditions.join(' AND ')}
-         GROUP BY a.question_id
-         ORDER BY MAX(r.submitted_at) DESC`,
-        params
-    );
+    sql += ` ORDER BY r2.submitted_at DESC`;
+    const [rows] = await pool.query(sql, params);
     return rows.map((r) => r.id);
 };
 
@@ -452,7 +452,6 @@ const getAnswerColumns = async () => {
 };
 
 // 写入答题记录（事务：写 exam_records + exam_answers）
-// exam_answers 写入时同时保存 review_status / review_score_rate（如果 schema 已有这两列）
 const createRecord = async (data) => {
     const conn = await pool.getConnection();
     try {
@@ -486,12 +485,12 @@ const createRecord = async (data) => {
                 const evalStatus = a.evaluation?.status;
                 const initialReviewStatus =
                     evalStatus === 'correct' || evalStatus === 'incorrect' ? null
-                    : (evalStatus === 'partial' ? 'partial'
-                    : (evalStatus === 'review' ? 'review'
-                    : (Number(a.isCorrect) === 3 ? 'review' : null)));
+                        : (evalStatus === 'partial' ? 'partial'
+                            : (evalStatus === 'review' ? 'review'
+                                : (Number(a.isCorrect) === 3 ? 'review' : null)));
                 const initialScoreRate =
                     initialReviewStatus === 'partial' ? Number(a.evaluation?.scoreRate || 0)
-                    : (initialReviewStatus === 'review' ? 0 : null);
+                        : (initialReviewStatus === 'review' ? 0 : null);
                 row.push(initialReviewStatus, initialScoreRate);
             }
             return row;
@@ -546,14 +545,14 @@ const reviewAnswer = async ({ answerId, reviewerId, status, scoreRate, comment }
     // 复核得分率必须落在 0-1，防止异常数据把总分推到 100 以上
     const safeScoreRate = Math.max(0, Math.min(1, Number(scoreRate) || 0));
     await pool.query(`UPDATE exam_answers SET is_correct=?, review_status=?, review_score_rate=?, review_comment=?,
-        reviewed_by=?, reviewed_at=NOW() WHERE id=?`, [isCorrect, status, safeScoreRate, comment || null, reviewerId, answerId]);
+                                              reviewed_by=?, reviewed_at=NOW() WHERE id=?`, [isCorrect, status, scoreRate, comment || null, reviewerId, answerId]);
     const [statsRows] = await pool.query(`SELECT COUNT(*) total,
-        SUM(CASE WHEN is_correct=2 THEN 1 ELSE 0 END) skipped,
-        SUM(CASE WHEN is_correct=1 THEN 1 ELSE 0 END) correct,
-        SUM(CASE WHEN is_correct=0 THEN 1 ELSE 0 END) wrong,
-        SUM(CASE WHEN is_correct NOT IN (2,3) OR review_status='partial' THEN 1 ELSE 0 END) evaluated,
-        SUM(CASE WHEN is_correct=1 THEN 1 WHEN review_status='partial' THEN COALESCE(review_score_rate,0) ELSE 0 END) earned
-        FROM exam_answers WHERE record_id=?`, [answer.record_id]);
+                                                 SUM(CASE WHEN is_correct=2 THEN 1 ELSE 0 END) skipped,
+                                                 SUM(CASE WHEN is_correct=1 THEN 1 ELSE 0 END) correct,
+                                                 SUM(CASE WHEN is_correct=0 THEN 1 ELSE 0 END) wrong,
+                                                 SUM(CASE WHEN is_correct NOT IN (2,3) OR review_status='partial' THEN 1 ELSE 0 END) evaluated,
+                                                 SUM(CASE WHEN is_correct=1 THEN 1 WHEN review_status='partial' THEN COALESCE(review_score_rate,0) ELSE 0 END) earned
+                                          FROM exam_answers WHERE record_id=?`, [answer.record_id]);
     const stats = statsRows[0];
     const accuracy = Number(stats.evaluated) ? Math.round(Number(stats.earned) * 10000 / Number(stats.evaluated)) / 100 : 0;
     await pool.query(`UPDATE exam_records SET correct_count=?, wrong_count=?, skipped_count=?, accuracy=?, score=? WHERE id=?`,
@@ -581,7 +580,7 @@ const saveDraft = async (userId, examId, { answers, durationSeconds }) => {
     const payload = typeof answers === 'string' ? answers : JSON.stringify(answers || {});
     await pool.query(
         `INSERT INTO exam_drafts (exam_id, user_id, answers, duration_seconds) VALUES (?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE answers = VALUES(answers), duration_seconds = VALUES(duration_seconds), updated_at = NOW()`,
+            ON DUPLICATE KEY UPDATE answers = VALUES(answers), duration_seconds = VALUES(duration_seconds), updated_at = NOW()`,
         [examId, userId, payload, Number(durationSeconds) || 0]
     );
     return findDraft(userId, examId);
@@ -637,8 +636,8 @@ const findRecordsByUser = async (userId, { page = 1, pageSize = 20 } = {}) => {
     const [rows] = await pool.query(
         `SELECT r.*, e.title AS exam_title, u.username, u.nickname, u.role
          FROM \`exam_records\` r
-         LEFT JOIN \`exams\` e ON r.exam_id = e.id
-         LEFT JOIN \`users\` u ON r.user_id = u.id
+                  LEFT JOIN \`exams\` e ON r.exam_id = e.id
+                  LEFT JOIN \`users\` u ON r.user_id = u.id
          WHERE r.user_id = ? ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?`,
         [userId, pageSize, offset]
     );
@@ -646,11 +645,7 @@ const findRecordsByUser = async (userId, { page = 1, pageSize = 20 } = {}) => {
 };
 
 // 按角色权限范围查询答题记录（含提交人信息）
-// 权限规则：
-//   student  → 仅本人记录
-//   teacher  → 所有 teacher + student 的记录
-//   admin    → 所有人的记录
-const findRecordsByScope = async ({ userId, userRole, page = 1, pageSize = 20, examIds } = {}) => {
+const findRecordsByScope = async ({ userId, userRole, page = 1, pageSize = 20 } = {}) => {
     const offset = (page - 1) * pageSize;
     const conditions = [];
     const params = [];
@@ -674,7 +669,7 @@ const findRecordsByScope = async ({ userId, userRole, page = 1, pageSize = 20, e
 
     const [countRows] = await pool.query(
         `SELECT COUNT(*) AS total FROM \`exam_records\` r
-         INNER JOIN \`users\` u ON r.user_id = u.id ${where}`,
+                                           INNER JOIN \`users\` u ON r.user_id = u.id ${where}`,
         params
     );
     const total = countRows[0].total;
@@ -682,9 +677,9 @@ const findRecordsByScope = async ({ userId, userRole, page = 1, pageSize = 20, e
     const [rows] = await pool.query(
         `SELECT r.*, e.title AS exam_title, u.username, u.nickname, u.role
          FROM \`exam_records\` r
-         LEFT JOIN \`exams\` e ON r.exam_id = e.id
-         LEFT JOIN \`users\` u ON r.user_id = u.id
-         ${where} ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?`,
+                  LEFT JOIN \`exams\` e ON r.exam_id = e.id
+                  LEFT JOIN \`users\` u ON r.user_id = u.id
+             ${where} ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?`,
         [...params, pageSize, offset]
     );
     return { rows, total };
@@ -695,8 +690,8 @@ const findRecordById = async (recordId) => {
     const [recordRows] = await pool.query(
         `SELECT r.*, e.title AS exam_title, u.username, u.nickname, u.role AS user_role
          FROM \`exam_records\` r
-         LEFT JOIN \`exams\` e ON r.exam_id = e.id
-         LEFT JOIN \`users\` u ON r.user_id = u.id
+                  LEFT JOIN \`exams\` e ON r.exam_id = e.id
+                  LEFT JOIN \`users\` u ON r.user_id = u.id
          WHERE r.id = ?`,
         [recordId]
     );
@@ -704,14 +699,8 @@ const findRecordById = async (recordId) => {
     const record = recordRows[0];
 
     const [answerRows] = await pool.query(
-        `SELECT a.*,
-                COALESCE(eq.snapshot_题目, q.题目) AS 题目,
-                COALESCE(eq.snapshot_选项, q.选项) AS 选项,
-                COALESCE(eq.snapshot_解析, q.解析) AS 解析
-         FROM \`exam_answers\` a
-         INNER JOIN \`exam_records\` r ON r.id = a.record_id
-         LEFT JOIN \`exam_questions\` eq ON eq.exam_id = r.exam_id AND eq.question_id = a.question_id
-         LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+        `SELECT a.*, q.题目, q.选项, q.解析 FROM \`exam_answers\` a
+                                                     LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
          WHERE a.record_id = ? ORDER BY a.id`,
         [recordId]
     );
@@ -727,39 +716,39 @@ const getStatistics = async (userId, examIds = null) => {
     // 总览
     const [overview] = await pool.query(
         `SELECT
-            COUNT(*) AS total_attempts,
-            COALESCE(ROUND(AVG(accuracy), 2), 0) AS avg_accuracy,
-            COALESCE(ROUND(MAX(accuracy), 2), 0) AS max_accuracy,
-            COALESCE(ROUND(MIN(accuracy), 2), 0) AS min_accuracy,
-            COALESCE(SUM(total_count), 0) AS total_questions,
-            COALESCE(SUM(correct_count), 0) AS total_correct
-         FROM \`exam_records\` WHERE user_id = ?${examClause}`,
-        [userId, ...examParams]
+             COUNT(*) AS total_attempts,
+             COALESCE(ROUND(AVG(accuracy), 2), 0) AS avg_accuracy,
+             COALESCE(ROUND(MAX(accuracy), 2), 0) AS max_accuracy,
+             COALESCE(ROUND(MIN(accuracy), 2), 0) AS min_accuracy,
+             COALESCE(SUM(total_count), 0) AS total_questions,
+             COALESCE(SUM(correct_count), 0) AS total_correct
+         FROM \`exam_records\` WHERE user_id = ?`,
+        [userId]
     );
 
-    // 近 20 次趋势（含提交人信息、试卷标题）
+    // 近 20 次趋势
     const [trend] = await pool.query(
         `SELECT r.id, r.exam_id, r.accuracy, r.score, r.total_count, r.answered_count, r.correct_count, r.wrong_count, r.skipped_count, r.duration_seconds, r.submitted_at, r.started_at,
                 e.title AS exam_title, u.username, u.nickname, u.role
          FROM \`exam_records\` r
-         LEFT JOIN \`exams\` e ON r.exam_id = e.id
-         LEFT JOIN \`users\` u ON r.user_id = u.id
-         WHERE r.user_id = ?${examClause}
+                  LEFT JOIN \`exams\` e ON r.exam_id = e.id
+                  LEFT JOIN \`users\` u ON r.user_id = u.id
+         WHERE r.user_id = ?
          ORDER BY r.submitted_at DESC LIMIT 20`,
         [userId, ...examParams]
     );
-    trend.reverse(); // 时间正序展示趋势
+    trend.reverse();
 
     // 按题型正确率
     const [byType] = await pool.query(
         `SELECT
-            a.question_type,
-            COUNT(*) AS total,
-            SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) AS correct,
-            ROUND(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS accuracy
+             a.question_type,
+             COUNT(*) AS total,
+             SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) AS correct,
+             ROUND(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS accuracy
          FROM \`exam_answers\` a
-         INNER JOIN \`exam_records\` r ON a.record_id = r.id
-         WHERE r.user_id = ? AND a.is_objective = 1${examClause}
+                  INNER JOIN \`exam_records\` r ON a.record_id = r.id
+         WHERE r.user_id = ? AND a.is_objective = 1
          GROUP BY a.question_type ORDER BY a.question_type`,
         [userId, ...examParams]
     );
@@ -801,7 +790,7 @@ const findRecordsByRole = async ({ role, userId, page = 1, pageSize = 20, examId
 
     const [countRows] = await pool.query(
         `SELECT COUNT(*) AS total FROM \`exam_records\` r
-         INNER JOIN \`users\` u ON r.user_id = u.id ${where}`,
+                                           INNER JOIN \`users\` u ON r.user_id = u.id ${where}`,
         params
     );
     const total = countRows[0].total;
@@ -812,17 +801,16 @@ const findRecordsByRole = async ({ role, userId, page = 1, pageSize = 20, examId
                 r.objective_total, r.objective_correct, r.accuracy, r.score,
                 r.duration_seconds, r.submitted_at, e.title AS exam_title
          FROM \`exam_records\` r
-         INNER JOIN \`users\` u ON r.user_id = u.id
-         LEFT JOIN \`exams\` e ON r.exam_id = e.id
-         ${where} ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?`,
+                  INNER JOIN \`users\` u ON r.user_id = u.id
+                  LEFT JOIN \`exams\` e ON r.exam_id = e.id
+             ${where} ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?`,
         [...params, pageSize, offset]
     );
     return { rows, total };
 };
 
 // 管理端：查询所有用户的答题记录（不分页，按用户+提交时间排序，含用户信息）
-// 用于"以人为界"分组统计：service 层按 user_id 分组，每人保留最近 N 次
-const findAllRecordsWithUser = async ({ role, examIds } = {}) => {
+const findAllRecordsWithUser = async ({ role } = {}) => {
     const conditions = [];
     const params = [];
     if (role) {
@@ -844,9 +832,9 @@ const findAllRecordsWithUser = async ({ role, examIds } = {}) => {
                 r.objective_total, r.objective_correct, r.accuracy, r.score,
                 r.duration_seconds, r.submitted_at, e.title AS exam_title
          FROM \`exam_records\` r
-         INNER JOIN \`users\` u ON r.user_id = u.id
-         LEFT JOIN \`exams\` e ON r.exam_id = e.id
-         ${where} ORDER BY u.id ASC, r.submitted_at DESC`,
+                  INNER JOIN \`users\` u ON r.user_id = u.id
+                  LEFT JOIN \`exams\` e ON r.exam_id = e.id
+             ${where} ORDER BY u.id ASC, r.submitted_at DESC`,
         params
     );
     return rows;
@@ -879,8 +867,8 @@ const findUsersWithRecords = async ({ role, examIds } = {}) => {
                 COALESCE(SUM(r.correct_count), 0) AS total_correct,
                 MAX(r.submitted_at) AS last_attempt_at
          FROM \`users\` u
-         INNER JOIN \`exam_records\` r ON u.id = r.user_id
-         ${where}
+                  INNER JOIN \`exam_records\` r ON u.id = r.user_id
+             ${where}
          GROUP BY u.id, u.username, u.nickname, u.role, u.status
          ORDER BY u.role ASC, attempt_count DESC`,
         params
@@ -921,7 +909,7 @@ const getExamAnalytics = async (examId, classId) => {
         `SELECT e.id, e.title, e.total_count, e.objective_count, e.subject, e.class_id, e.created_at,
                 c.name AS class_name
          FROM \`exams\` e
-         LEFT JOIN \`classes\` c ON e.class_id = c.id
+                  LEFT JOIN \`classes\` c ON e.class_id = c.id
          WHERE e.id = ?`,
         [examId]
     );
@@ -929,19 +917,18 @@ const getExamAnalytics = async (examId, classId) => {
     const exam = examRows[0];
 
     // 2. 每道题的正确率统计
-    // 通过 exam_questions 获取题目顺序，JOIN exam_answers 统计每题被答情况
-    const questionStatsSql = hasClassFilter
-        ? `SELECT eq.question_id, eq.sort_order,
-                q.题目 AS question_text, q.题型 AS question_type, q.难度 AS difficulty, q.答案 AS correct_answer,
+    const [questionStats] = await pool.query(
+        `SELECT eq.question_id, eq.sort_order,
+                q.题目 AS question_text, q.题型 AS question_type, q.答案 AS correct_answer,
                 COUNT(a.id) AS answered_count,
                 SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) AS correct_count,
                 SUM(CASE WHEN a.is_correct = 0 THEN 1 ELSE 0 END) AS wrong_count,
                 SUM(CASE WHEN a.is_correct = 2 THEN 1 ELSE 0 END) AS skipped_count,
                 ROUND(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(a.id), 0), 2) AS accuracy
          FROM \`exam_questions\` eq
-         LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
-         LEFT JOIN \`exam_records\` r ON r.exam_id = eq.exam_id${classRecordFilter}
-         LEFT JOIN \`exam_answers\` a ON a.record_id = r.id AND a.question_id = eq.question_id
+                  LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                  LEFT JOIN \`exam_records\` r ON r.exam_id = eq.exam_id
+                  LEFT JOIN \`exam_answers\` a ON a.record_id = r.id AND a.question_id = eq.question_id
          WHERE eq.exam_id = ?
          GROUP BY eq.question_id, eq.sort_order, q.题目, q.题型, q.难度, q.答案
          ORDER BY eq.sort_order ASC`
@@ -964,15 +951,15 @@ const getExamAnalytics = async (examId, classId) => {
         hasClassFilter ? [selectedClassId, examId] : [examId]
     );
 
-    // 3. 学生成绩列表（每人取最高分的一次记录，JS 去重）
-    const [allStudentRows] = await pool.query(
+    // 3. 学生成绩列表
+    const [studentResults] = await pool.query(
         `SELECT r.id AS record_id, r.user_id, u.username, u.nickname, u.college, u.school,
                 r.score, r.accuracy, r.total_count, r.answered_count, r.correct_count,
                 r.wrong_count, r.skipped_count, r.duration_seconds,
                 r.started_at, r.submitted_at
          FROM \`exam_records\` r
-         LEFT JOIN \`users\` u ON r.user_id = u.id
-         WHERE ${hasClassFilter ? 'r.exam_id = ? AND u.role = \'student\'' : '1 = 1'}${classRecordFilter}
+                  INNER JOIN \`users\` u ON r.user_id = u.id
+         WHERE r.exam_id = ? AND u.role = 'student'
          ORDER BY r.score DESC, r.accuracy DESC, r.submitted_at ASC`,
         hasClassFilter ? [examId, selectedClassId] : []
     );
@@ -980,18 +967,38 @@ const getExamAnalytics = async (examId, classId) => {
     // 4. 整体统计
     const [overview] = await pool.query(
         `SELECT
-            COUNT(*) AS attempt_count,
-            COUNT(DISTINCT r.user_id) AS participant_count,
-            COALESCE(ROUND(AVG(score), 2), 0) AS avg_score,
-            COALESCE(ROUND(MAX(score), 2), 0) AS max_score,
-            COALESCE(ROUND(MIN(score), 2), 0) AS min_score,
-            COALESCE(ROUND(SUM(r.correct_count) * 100.0 / NULLIF(SUM(r.total_count), 0), 2), 0) AS avg_accuracy,
-            SUM(CASE WHEN score >= 60 THEN 1 ELSE 0 END) AS pass_count,
-            ROUND(SUM(CASE WHEN score >= 60 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0), 2) AS pass_rate
+             COUNT(*) AS participant_count,
+             COALESCE(ROUND(AVG(score), 2), 0) AS avg_score,
+             COALESCE(ROUND(MAX(score), 2), 0) AS max_score,
+             COALESCE(ROUND(MIN(score), 2), 0) AS min_score,
+             COALESCE(ROUND(AVG(accuracy), 2), 0) AS avg_accuracy,
+             SUM(CASE WHEN score >= 60 THEN 1 ELSE 0 END) AS pass_count,
+             ROUND(SUM(CASE WHEN score >= 60 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0), 2) AS pass_rate
          FROM \`exam_records\` r
-         LEFT JOIN \`users\` u ON r.user_id = u.id
-         WHERE ${hasClassFilter ? 'r.exam_id = ? AND u.role = \'student\'' : '1 = 1'}${classRecordFilter}`,
-        hasClassFilter ? [examId, selectedClassId] : []
+                  INNER JOIN \`users\` u ON r.user_id = u.id
+         WHERE r.exam_id = ? AND u.role = 'student'`,
+        [examId]
+    );
+
+    // 5. 班级对比
+    const [classBreakdown] = await pool.query(
+        `SELECT
+             COALESCE(c.name, '未分班') AS class_name,
+             COUNT(r.id) AS participant_count,
+             COALESCE(ROUND(AVG(r.score), 2), 0) AS avg_score,
+             COALESCE(ROUND(MAX(r.score), 2), 0) AS max_score,
+             COALESCE(ROUND(MIN(r.score), 2), 0) AS min_score,
+             COALESCE(ROUND(AVG(r.accuracy), 2), 0) AS avg_accuracy,
+             SUM(CASE WHEN r.score >= 60 THEN 1 ELSE 0 END) AS pass_count,
+             ROUND(SUM(CASE WHEN r.score >= 60 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0), 2) AS pass_rate
+         FROM \`exam_records\` r
+                  INNER JOIN \`users\` u ON r.user_id = u.id
+                  LEFT JOIN \`student_classes\` sc ON sc.student_id = u.id
+                  LEFT JOIN \`classes\` c ON c.id = sc.class_id
+         WHERE r.exam_id = ? AND u.role = 'student'
+         GROUP BY c.id, c.name
+         ORDER BY avg_score DESC`,
+        [examId]
     );
     const seenUsers = new Set();
     const studentResults = [];
@@ -1029,33 +1036,33 @@ const getExamAnalytics = async (examId, classId) => {
         questionStats = qRows;
     }
 
-    // 6. 分数段分布（供柱状图用）
+    // 6. 分数段分布
     const [scoreDistribution] = await pool.query(
         `SELECT
-            CASE
-                WHEN score < 60 THEN '不及格(0-59)'
-                WHEN score < 70 THEN '及格(60-69)'
-                WHEN score < 80 THEN '中等(70-79)'
-                WHEN score < 90 THEN '良好(80-89)'
-                ELSE '优秀(90-100)'
-            END AS range_label,
-            CASE
-                WHEN score < 60 THEN 1
-                WHEN score < 70 THEN 2
-                WHEN score < 80 THEN 3
-                WHEN score < 90 THEN 4
-                ELSE 5
-            END AS range_order,
-            COUNT(*) AS count
+             CASE
+                 WHEN score < 60 THEN '不及格(0-59)'
+                 WHEN score < 70 THEN '及格(60-69)'
+                 WHEN score < 80 THEN '中等(70-79)'
+                 WHEN score < 90 THEN '良好(80-89)'
+                 ELSE '优秀(90-100)'
+                 END AS range_label,
+             CASE
+                 WHEN score < 60 THEN 1
+                 WHEN score < 70 THEN 2
+                 WHEN score < 80 THEN 3
+                 WHEN score < 90 THEN 4
+                 ELSE 5
+                 END AS range_order,
+             COUNT(*) AS count
          FROM \`exam_records\` r
-         LEFT JOIN \`users\` u ON r.user_id = u.id
-         WHERE ${hasClassFilter ? 'r.exam_id = ? AND u.role = \'student\'' : '1 = 1'}${classRecordFilter}
+             INNER JOIN \`users\` u ON r.user_id = u.id
+         WHERE r.exam_id = ? AND u.role = 'student'
          GROUP BY range_label, range_order
          ORDER BY range_order ASC`,
         hasClassFilter ? [examId, selectedClassId] : []
     );
 
-    // 7. 及格/不及格人数（供饼图用）
+    // 7. 及格/不及格人数
     const passCount = overview[0]?.pass_count || 0;
     const failCount = (overview[0]?.attempt_count || 0) - passCount;
 
@@ -1078,7 +1085,7 @@ const getQuestionStudentDetail = async (examId, questionId) => {
                 q.题目 AS question_text, q.题型 AS question_type, q.选项 AS options,
                 q.答案 AS correct_answer, q.解析 AS analysis
          FROM \`exam_questions\` eq
-         LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                  LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
          WHERE eq.exam_id = ? AND eq.question_id = ?`,
         [examId, questionId]
     );
@@ -1093,10 +1100,10 @@ const getQuestionStudentDetail = async (examId, questionId) => {
                 c.name AS class_name,
                 r.score, r.accuracy, r.submitted_at
          FROM \`exam_answers\` a
-         INNER JOIN \`exam_records\` r ON a.record_id = r.id
-         INNER JOIN \`users\` u ON r.user_id = u.id
-         LEFT JOIN \`student_classes\` sc ON sc.student_id = u.id
-         LEFT JOIN \`classes\` c ON c.id = sc.class_id
+                  INNER JOIN \`exam_records\` r ON a.record_id = r.id
+                  INNER JOIN \`users\` u ON r.user_id = u.id
+                  LEFT JOIN \`student_classes\` sc ON sc.student_id = u.id
+                  LEFT JOIN \`classes\` c ON c.id = sc.class_id
          WHERE r.exam_id = ? AND a.question_id = ? AND u.role = 'student'
          ORDER BY c.name ASC, u.id ASC`,
         [examId, questionId]
@@ -1124,13 +1131,12 @@ const findRecentWrongAnswers = async (userId, { days = 30, limit = 50 } = {}) =>
                 COALESCE(eq.snapshot_难度, q.难度) AS difficulty,
                 a.user_answer AS user_answer, a.correct_answer AS correct_answer
          FROM \`exam_answers\` a
-         INNER JOIN \`exam_records\` r ON a.record_id = r.id
-         LEFT JOIN \`exam_questions\` eq ON eq.exam_id = r.exam_id AND eq.question_id = a.question_id
-         LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+                  INNER JOIN \`exam_records\` r ON a.record_id = r.id
+                  LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
          WHERE r.user_id = ? AND a.is_correct = 0
            AND r.submitted_at >= NOW() - INTERVAL ? DAY
          ORDER BY r.submitted_at DESC
-         LIMIT ?`,
+             LIMIT ?`,
         [userId, Number(days), Number(limit)]
     );
     return rows;

@@ -411,12 +411,13 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
         });
     }
 
-    // 待复核题不计入分母，部分正确按得分比例计入。
-    const evaluatedPoints = answerRecords.reduce((sum, item) => sum + (item.isCorrect === 2 || item.evaluation?.reviewRequired ? 0 : 1), 0);
-    const earnedPoints = answerRecords.reduce((sum, item) => sum + (item.isCorrect === 1 ? 1 : Number(item.evaluation?.scoreRate || 0)), 0);
-    const accuracy = evaluatedPoints > 0
-        ? Math.round((earnedPoints / evaluatedPoints) * 10000) / 100
+    // ================== [MODIFIED] 准确率计算改为：正确数 / 总题数 ==================
+    const totalQuestions = exam.questions.length;
+    const accuracy = totalQuestions > 0
+        ? Math.round((correctCount / totalQuestions) * 10000) / 100
         : 0;
+    // ============================================================================
+
     const score = accuracy; // 百分制
 
     const recordId = await practiceModel.createRecord({
@@ -535,10 +536,8 @@ const getStats = async (userId, userRole) => {
 
 // ==================== 答题草稿（学生本人读写） ====================
 const getExamDraft = async (userId, examId) => {
-    // 先通过 getExam 校验可见性（保证同一份班级可见性规则），但不抛异常给草稿返回 null
     try { await getExam(examId, userId, 'student'); } catch (e) {
         if (e.statusCode === 403 || e.statusCode === 404) throw e;
-        // 若 getExam 中检查 studentModel.classModel 等异常，先允许本机继续
     }
     const draft = await practiceModel.findDraft(userId, examId);
     return draft || { exam_id: examId, user_id: userId, answers: {}, duration_seconds: 0, updated_at: null };
@@ -611,6 +610,65 @@ const createWrongExam = async (userId, options = {}) => {
     };
 };
 
+// ===== [新增] 单题练习：根据题目ID生成练习 =====
+const startSingleQuestionPractice = async (userId, questionId) => {
+    const questionModel = require('../models/questionModel');
+    const question = await questionModel.findById(questionId);
+    if (!question) {
+        const error = new Error('题目不存在');
+        error.statusCode = 404;
+        error.errorCode = 40401;
+        throw error;
+    }
+
+    const title = `单题练习-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
+    const { examId, objectiveCount } = await practiceModel.createExam({
+        userId,
+        title,
+        chapter: question.章节 || null,
+        questionType: question.题型 || null,
+        difficulty: question.难度 || null,
+        questions: [question],
+        subject: question.科目 || null,
+        classId: null,
+    });
+
+    return {
+        examId,
+        title,
+        total: 1,
+        objectiveCount,
+        questions: [question],
+    };
+};
+
+// ===== 单题判题（不创建试卷，不记录） =====
+const checkSingleQuestion = async (questionId, userAnswer) => {
+    const questionModel = require('../models/questionModel');
+    const question = await questionModel.findById(questionId);
+    if (!question) {
+        const error = new Error('题目不存在');
+        error.statusCode = 404;
+        error.errorCode = 40401;
+        throw error;
+    }
+
+    // 判断答案是否正确（复用原有判题逻辑）
+    const type = Number(question.题型);
+    const correct = checkAnswer(type, userAnswer, question.答案);
+
+    return {
+        isCorrect: correct,
+        correctAnswer: question.答案,
+        explanation: question.解析 || '暂无解析',
+        question: {
+            title: question.题目,
+            type: question.题型,
+            options: question.选项,
+        }
+    };
+};
+
 // ==================== 管理端 ====================
 
 // 权限规则：
@@ -643,12 +701,7 @@ const adminListRecords = async (callerRole, callerId, { role, page, pageSize, ex
 // 管理端：查询有做题记录的用户列表（含统计汇总，按角色区分）
 const adminListUsers = async (callerRole, callerId, { role } = {}) => {
     const finalRole = resolveRoleFilter(callerRole, role);
-    let examIds = null;
-    if (callerRole === 'teacher') {
-        examIds = await practiceModel.findExamIdsByUser(callerId);
-    }
-    const users = await practiceModel.findUsersWithRecords({ role: finalRole, examIds });
-    // 按 role 分组返回，方便前端展示
+    const users = await practiceModel.findUsersWithRecords({ role: finalRole });
     const grouped = { student: [], teacher: [], admin: [] };
     users.forEach((u) => {
         if (grouped[u.role]) grouped[u.role].push(u);
@@ -657,9 +710,7 @@ const adminListUsers = async (callerRole, callerId, { role } = {}) => {
 };
 
 // 管理端：查询指定用户的答题记录列表
-const adminListUserRecords = async (callerRole, callerId, targetUserId, { page, pageSize } = {}) => {
-    // 教师只能查看学生记录，需校验目标用户角色
-    let examIds = null;
+const adminListUserRecords = async (callerRole, targetUserId, { page, pageSize } = {}) => {
     if (callerRole === 'teacher') {
         const targetUser = await practiceModel.findUserById(targetUserId);
         if (!targetUser || targetUser.role !== 'student') {
@@ -816,8 +867,7 @@ const deleteExam = async (actor, examId) => {
 };
 
 // 管理端：以人为界的全局统计总览
-// 返回所有有答题记录的用户（按角色过滤），每人含：个人汇总（基于全部记录） + 最近 N 次答题明细
-const adminGetAllStatsByUser = async (callerRole, callerId, { role } = {}) => {
+const adminGetAllStatsByUser = async (callerRole, { role } = {}) => {
     const finalRole = resolveRoleFilter(callerRole, role);
     let examIds = null;
     if (callerRole === 'teacher') {
@@ -825,7 +875,6 @@ const adminGetAllStatsByUser = async (callerRole, callerId, { role } = {}) => {
     }
     const records = await practiceModel.findAllRecordsWithUser({ role: finalRole, examIds });
 
-    // 按 user_id 分组，同时累计全量汇总
     const userMap = new Map();
     records.forEach((r) => {
         if (!userMap.has(r.user_id)) {
@@ -866,7 +915,7 @@ const adminGetAllStatsByUser = async (callerRole, callerId, { role } = {}) => {
         });
     });
 
-    const PER_USER_LIMIT = 20; // 每人最多展示最近 20 次明细
+    const PER_USER_LIMIT = 20;
     const users = Array.from(userMap.values()).map((u) => {
         const overview = {
             attempt_count: u.attempt_count,
@@ -895,7 +944,6 @@ const getExamAnalytics = async (caller, examId, classId) => {
     if (!exam) {
         throw makeError('试卷不存在', 404, 40401);
     }
-    // 权限校验：教师只能查看自己创建的试卷分析；管理员可查看所有
     if (caller.role === 'teacher' && exam.user_id !== caller.id) {
         throw makeError('无权查看此试卷的分析数据', 403, 40301);
     }
@@ -941,6 +989,8 @@ module.exports = {
     deleteExam,
     listWrongQuestions,
     createWrongExam,
+    startSingleQuestionPractice,
+    checkSingleQuestion,  // <-- 确保导出
     adminListRecords,
     adminListUsers,
     adminListUserRecords,
