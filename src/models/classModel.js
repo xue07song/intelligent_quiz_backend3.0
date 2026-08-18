@@ -12,18 +12,12 @@ const findAll = async ({ keyword, ownerId } = {}) => {
         const kw = `%${keyword.trim()}%`;
         params.push(kw, kw, kw);
     }
-    if (ownerId !== undefined && ownerId !== null) {
-        conditions.push('c.owner_id = ?');
-        params.push(ownerId);
-    }
+    // ownerId 暂时不用于过滤（classes 表无 owner_id 列），保留参数兼容
     if (conditions.length) where = `WHERE ${conditions.join(' AND ')}`;
     const [rows] = await pool.query(
-        `SELECT c.*, co.nickname counselor_name, co.employee_no counselor_employee_no,
-                ht.nickname head_teacher_name, ht.employee_no head_teacher_employee_no,
+        `SELECT c.*,
                 (SELECT COUNT(*) FROM student_classes sc WHERE sc.class_id = c.id) AS student_count
          FROM classes c
-         LEFT JOIN users co ON co.id = c.counselor_id
-         LEFT JOIN users ht ON ht.id = c.head_teacher_id
          ${where}
          ORDER BY c.id ASC`,
         params
@@ -45,28 +39,63 @@ const findByName = async (name) => {
     return rows[0] || null;
 };
 
-const create = async ({ name, grade, remark, type, college, major, capacity, counselorId, headTeacherId }) => {
+// classes 表列自探测缓存
+let cachedClassColumns = null;
+const getClassColumns = async () => {
+    if (cachedClassColumns) return cachedClassColumns;
+    try {
+        const [rows] = await pool.query(
+            `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'classes'`
+        );
+        cachedClassColumns = new Set(rows.map(r => r.COLUMN_NAME));
+    } catch {
+        cachedClassColumns = new Set();
+    }
+    return cachedClassColumns;
+};
+
+const create = async ({ name, grade, remark, type, college, major }) => {
+    const actual = await getClassColumns();
+    const colMap = {
+        name: () => String(name).trim(),
+        grade: () => grade || null,
+        remark: () => remark || null,
+        type: () => type || 'compulsory',
+        college: () => college || null,
+        major: () => major || null,
+    };
+    const cols = [];
+    const placeholders = [];
+    const values = [];
+    for (const [col, valFn] of Object.entries(colMap)) {
+        if (actual.has(col)) {
+            cols.push(`\`${col}\``);
+            placeholders.push('?');
+            values.push(valFn());
+        }
+    }
+    if (cols.length === 0) {
+        throw new Error('classes 表缺少必要列');
+    }
     const [result] = await pool.query(
-        `INSERT INTO classes (name, grade, remark, type, college, major, capacity, counselor_id, head_teacher_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [String(name).trim(), grade || null, remark || null, type || 'compulsory', college || null,
-            major || null, Math.max(1, Number(capacity) || 50), counselorId || null, headTeacherId || null]
+        `INSERT INTO classes (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`,
+        values
     );
     return result;
 };
 
-const update = async (id, { name, grade, remark, type, college, major, capacity, counselorId, headTeacherId }) => {
+const update = async (id, data) => {
+    const actual = await getClassColumns();
     const fields = [];
     const params = [];
-    if (name !== undefined) { fields.push('name = ?'); params.push(String(name).trim()); }
-    if (grade !== undefined) { fields.push('grade = ?'); params.push(grade || null); }
-    if (remark !== undefined) { fields.push('remark = ?'); params.push(remark || null); }
-    if (type !== undefined) { fields.push('type = ?'); params.push(type); }
-    if (college !== undefined) { fields.push('college = ?'); params.push(college || null); }
-    if (major !== undefined) { fields.push('major = ?'); params.push(major || null); }
-    if (capacity !== undefined) { fields.push('capacity = ?'); params.push(Math.max(1, Number(capacity) || 50)); }
-    if (counselorId !== undefined) { fields.push('counselor_id = ?'); params.push(counselorId || null); }
-    if (headTeacherId !== undefined) { fields.push('head_teacher_id = ?'); params.push(headTeacherId || null); }
+    const allowed = ['name', 'grade', 'remark', 'type', 'college', 'major'];
+    for (const field of allowed) {
+        if (data[field] !== undefined && actual.has(field)) {
+            fields.push(`${field} = ?`);
+            params.push(field === 'name' ? String(data.name).trim() : (data[field] || null));
+        }
+    }
     if (fields.length === 0) return { affectedRows: 0 };
     params.push(id);
     const [result] = await pool.query(`UPDATE classes SET ${fields.join(', ')} WHERE id = ?`, params);

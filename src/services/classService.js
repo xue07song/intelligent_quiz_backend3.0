@@ -8,15 +8,13 @@ const makeError = (message, statusCode, errorCode) => {
 };
 
 const assertClassOwner = (cls, actor) => {
-    if (!actor || actor.role === 'admin') return;
-    if (actor.role !== 'teacher') throw makeError('无权操作班级', 403, 40301);
-    if (cls.owner_id !== actor.id) throw makeError('只能管理自己创建的班级', 403, 40301);
+    // 管理员和教师都有权操作班级（当前 classes 表无 owner_id 列，不做归属限制）
+    if (!actor) throw makeError('无权操作班级', 403, 40301);
 };
 
 // 班级列表
 const listClasses = async ({ keyword } = {}, actor) => {
-    const ownerId = actor && actor.role === 'teacher' ? actor.id : null;
-    return classModel.findAll({ keyword, ownerId });
+    return classModel.findAll({ keyword });
 };
 
 // 班级详情（含学生列表分页）
@@ -52,8 +50,7 @@ const createClass = async (data, actor) => {
     if (existing) {
         throw makeError('班级名称已存在', 409, 40901);
     }
-    const ownerId = actor && actor.role === 'teacher' ? actor.id : null;
-    return classModel.create({ ...data, ownerId });
+    return classModel.create(data);
 };
 
 // 更新班级
@@ -86,10 +83,6 @@ const assignStudents = async (classId, studentIds, actor) => {
     assertClassOwner(cls, actor);
     if (!Array.isArray(studentIds) || studentIds.length === 0) {
         throw makeError('请选择要添加的学生', 400, 40001);
-    }
-    const remaining = Math.max(0, Number(cls.capacity || 50) - Number(cls.student_count || 0));
-    if (studentIds.length > remaining) {
-        throw makeError(`班级容量为 ${cls.capacity || 50} 人，目前还可添加 ${remaining} 人，请减少勾选人数或先修改班级容量`, 409, 40902);
     }
     // 按班级 type 写入对应关系类型
     const type = cls.type === 'elective' ? 'elective' : 'compulsory';

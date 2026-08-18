@@ -54,6 +54,15 @@ const createUser = async (data) => {
         password: hashedPassword,
         role: data.role,
         nickname: data.nickname,
+        email: data.email,
+        phone: data.phone,
+        school: data.school,
+        college: data.college,
+        major: data.major,
+        grade: data.grade,
+        student_no: data.student_no,
+        employee_no: data.employee_no,
+        title: data.title,
         status: data.status ?? 1,
     });
 
