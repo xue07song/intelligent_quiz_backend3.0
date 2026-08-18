@@ -45,6 +45,8 @@ const ensureCompatibleSchema = async () => {
         reject_reason: 'VARCHAR(500) NULL',
         reviewed_by: 'BIGINT NULL',
         reviewed_at: 'DATETIME NULL',
+        handled_by: 'BIGINT NULL',
+        handled_at: 'DATETIME NULL',
         updated_at: 'TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
     });
 
@@ -79,27 +81,32 @@ const ensureCompatibleSchema = async () => {
     });
 
     await addMissingColumns('classes', {
-        owner_id: 'INT NULL',
+        college: 'VARCHAR(255) NULL',
+        major: 'VARCHAR(255) NULL',
+        capacity: 'INT NOT NULL DEFAULT 50',
+        counselor_id: 'BIGINT NULL',
+        head_teacher_id: 'BIGINT NULL',
     });
-
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS exam_attempts (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            exam_id INT NOT NULL,
-            user_id INT NOT NULL,
-            attempt_no INT NOT NULL DEFAULT 1,
-            started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            submitted_at DATETIME NULL DEFAULT NULL,
-            UNIQUE KEY uk_exam_user_attempt (exam_id, user_id, attempt_no),
-            KEY idx_user (user_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生作答尝试表（服务端计时与次数控制）'
-    `);
 
     await pool.query(`CREATE TABLE IF NOT EXISTS teacher_subjects (
         user_id BIGINT NOT NULL,
         subject VARCHAR(255) NOT NULL,
         PRIMARY KEY (user_id, subject),
         KEY idx_teacher_subject (subject)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS academic_colleges (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS academic_majors (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        college_id BIGINT NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_college_major (college_id, name),
+        KEY idx_major_college (college_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 };
 

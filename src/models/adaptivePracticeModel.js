@@ -111,7 +111,7 @@ const getOverview = async (examIds = null) => {
         : '';
     const examParams = examIdsArray || [];
     const [users] = await pool.query(
-        `SELECT u.id userId, u.username, u.nickname,
+        `SELECT u.id userId, u.username, u.nickname, c.id classId, COALESCE(c.name, '未分班') className,
           COUNT(CASE WHEN s.answered_count > 0 THEN s.id END) sessionCount,
           COALESCE(SUM(s.answered_count),0) answeredCount,
           COALESCE(SUM(s.correct_count),0) correctCount,
@@ -119,14 +119,18 @@ const getOverview = async (examIds = null) => {
           COALESCE(MAX(s.current_difficulty),1) highestDifficulty,
           MAX(CASE WHEN s.answered_count > 0 THEN s.updated_at END) lastPracticeAt
          FROM users u LEFT JOIN adaptive_practice_sessions s ON s.user_id=u.id
-         WHERE u.role='student'${examScopeClause} GROUP BY u.id, u.username, u.nickname ORDER BY lastPracticeAt DESC, u.id`,
-        examParams
+         LEFT JOIN classes c ON c.id=u.class_id
+         WHERE u.role='student' GROUP BY u.id, u.username, u.nickname, c.id, c.name ORDER BY className, lastPracticeAt DESC, u.id`
     );
     const [sessions] = await pool.query(
-        `SELECT s.*, u.username, u.nickname FROM adaptive_practice_sessions s
-         INNER JOIN users u ON u.id=s.user_id WHERE s.answered_count > 0 ORDER BY s.updated_at DESC LIMIT 100`
+        `SELECT s.*, u.username, u.nickname, c.id classId, COALESCE(c.name, '未分班') className
+         FROM adaptive_practice_sessions s INNER JOIN users u ON u.id=s.user_id
+         LEFT JOIN classes c ON c.id=u.class_id
+         WHERE s.answered_count > 0 ORDER BY s.updated_at DESC LIMIT 100`
     );
-    return { users, recentSessions: sessions };
+    const [classes] = await pool.query(`SELECT c.id,c.name,COUNT(DISTINCT sc.student_id) studentCount
+        FROM classes c LEFT JOIN student_classes sc ON sc.class_id=c.id GROUP BY c.id,c.name ORDER BY c.name`);
+    return { users, recentSessions: sessions, classes };
 };
 
 const getStudentProgress = async (userId) => {

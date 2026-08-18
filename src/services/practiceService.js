@@ -890,7 +890,7 @@ const adminGetAllStatsByUser = async (callerRole, callerId, { role } = {}) => {
 };
 
 // 试卷维度分析：每题正确率 + 学生成绩 + 整体统计 + 班级对比 + 分数段
-const getExamAnalytics = async (caller, examId) => {
+const getExamAnalytics = async (caller, examId, classId) => {
     const exam = await practiceModel.findExamById(examId);
     if (!exam) {
         throw makeError('试卷不存在', 404, 40401);
@@ -899,7 +899,11 @@ const getExamAnalytics = async (caller, examId) => {
     if (caller.role === 'teacher' && exam.user_id !== caller.id) {
         throw makeError('无权查看此试卷的分析数据', 403, 40301);
     }
-    return practiceModel.getExamAnalytics(examId);
+    const selectedClassId = Number(classId);
+    const normalizedClassId = Number.isInteger(selectedClassId) && selectedClassId > 0
+        ? selectedClassId
+        : null;
+    return practiceModel.getExamAnalytics(examId, normalizedClassId);
 };
 
 // 单题详情：某试卷某道题每个学生的作答情况

@@ -1,24 +1,23 @@
 const pool = require('../config/db');
 
-const getStudents = async (examIds = null) => {
-    const examIdsArray = Array.isArray(examIds) && examIds.length > 0 ? examIds : null;
-    if (Array.isArray(examIds) && examIds.length === 0) return [];
-    let sql = "SELECT DISTINCT u.id, u.username, u.nickname FROM users u INNER JOIN exam_records r ON r.user_id = u.id";
-    const params = [];
-    if (examIdsArray) {
-        const placeholders = examIdsArray.map(() => '?').join(', ');
-        sql += ` WHERE u.role = 'student' AND r.exam_id IN (${placeholders})`;
-        params.push(...examIdsArray);
-    } else {
-        sql += " WHERE u.role = 'student'";
-    }
-    sql += " ORDER BY u.id";
-    const [rows] = await pool.query(sql, params);
+const getStudents = async () => {
+    const [rows] = await pool.query(`SELECT u.id, u.username, u.nickname, c.id classId,
+        COALESCE(c.name, '未分班') className FROM users u LEFT JOIN classes c ON c.id=u.class_id
+        WHERE u.role='student' ORDER BY className, u.id`);
+    return rows;
+};
+
+const getClasses = async () => {
+    const [rows] = await pool.query(`SELECT c.id, c.name, COUNT(DISTINCT sc.student_id) studentCount
+        FROM classes c LEFT JOIN student_classes sc ON sc.class_id=c.id
+        GROUP BY c.id, c.name ORDER BY c.name`);
     return rows;
 };
 
 const getStudent = async (userId) => {
-    const [rows] = await pool.query("SELECT id, username, nickname FROM users WHERE id=? AND role='student'", [userId]);
+    const [rows] = await pool.query(`SELECT u.id, u.username, u.nickname, c.id classId,
+        COALESCE(c.name, '未分班') className FROM users u LEFT JOIN classes c ON c.id=u.class_id
+        WHERE u.id=? AND u.role='student'`, [userId]);
     return rows[0] || null;
 };
 
@@ -61,4 +60,4 @@ const getAdaptiveAnswers = async (userId) => {
     return rows;
 };
 
-module.exports = { getStudents, getStudent, getExamRecords, getExamAnswers, getAdaptiveAnswers };
+module.exports = { getStudents, getClasses, getStudent, getExamRecords, getExamAnswers, getAdaptiveAnswers };

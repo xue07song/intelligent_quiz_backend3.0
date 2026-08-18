@@ -3,6 +3,8 @@ const feedbackModel = require('../models/feedbackModel');
 // 允许的枚举值
 const ALLOWED_CATEGORIES = ['bug', 'suggestion', 'other'];
 const ALLOWED_STATUSES = ['pending', 'processing', 'resolved', 'closed'];
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const CHINA_PHONE_PATTERN = /^1[3-9]\d{9}$/;
 
 // 创建反馈
 const createFeedback = async (userId, data) => {
@@ -20,13 +22,20 @@ const createFeedback = async (userId, data) => {
     }
 
     const category = ALLOWED_CATEGORIES.includes(data.category) ? data.category : 'other';
+    const contact = data.contact ? String(data.contact).trim() : '';
+    if (contact && !EMAIL_PATTERN.test(contact) && !CHINA_PHONE_PATTERN.test(contact)) {
+        const err = new Error('请填写正规手机号码或邮箱');
+        err.statusCode = 400;
+        err.errorCode = 40001;
+        throw err;
+    }
 
     return feedbackModel.create({
         user_id: userId,
         category,
         title: String(data.title).trim().slice(0, 100),
         content: String(data.content).trim(),
-        contact: data.contact ? String(data.contact).trim().slice(0, 100) : null,
+        contact: contact ? contact.slice(0, 100) : null,
     });
 };
 

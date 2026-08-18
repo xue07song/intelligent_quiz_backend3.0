@@ -205,16 +205,19 @@ const findExamsByUser = async (userId, { page = 1, pageSize = 20, subject, class
     const conditions = ['e.user_id = ?'];
     const params = [userId];
     if (subject) { conditions.push('e.subject = ?'); params.push(subject); }
-    if (classId) { conditions.push('e.class_id = ?'); params.push(Number(classId)); }
+    if (classId) { conditions.push('(e.class_id IS NULL OR e.class_id = ?)'); params.push(Number(classId)); }
     const where = `WHERE ${conditions.join(' AND ')}`;
     const [countRows] = await pool.query(
         `SELECT COUNT(*) AS total FROM \`exams\` e ${where}`, params
     );
     const total = countRows[0].total;
     const [rows] = await pool.query(
-        `SELECT e.*, (SELECT COUNT(*) FROM \`exam_records\` r WHERE r.exam_id = e.id) AS attempt_count
+        `SELECT e.*, (SELECT COUNT(*) FROM \`exam_records\` r
+          WHERE r.exam_id = e.id
+            ${classId ? 'AND EXISTS (SELECT 1 FROM student_classes sc WHERE sc.student_id = r.user_id AND sc.class_id = ?)' : ''}
+         ) AS attempt_count
          FROM \`exams\` e ${where} ORDER BY e.id DESC LIMIT ? OFFSET ?`,
-        [...params, pageSize, offset]
+        [...(classId ? [Number(classId)] : []), ...params, pageSize, offset]
     );
     return { rows, total };
 };
@@ -247,15 +250,22 @@ const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, sub
         conditions.push("u.role='teacher'");
     }
     if (subject) { conditions.push('e.subject = ?'); params.push(subject); }
+    if (userRole === 'admin' && classId) {
+        conditions.push('(e.class_id IS NULL OR e.class_id = ?)');
+        params.push(Number(classId));
+    }
     const where = `WHERE ${conditions.join(' AND ')}`;
     const [countRows] = await pool.query(
         `SELECT COUNT(*) total FROM exams e INNER JOIN users u ON u.id=e.user_id ${where}`, params
     );
     const [rows] = await pool.query(
         `SELECT e.*, u.nickname creator_name, u.username creator_username, u.role creator_role,
-         (SELECT COUNT(*) FROM exam_records r WHERE r.exam_id=e.id) attempt_count
+         (SELECT COUNT(*) FROM exam_records r WHERE ${userRole === 'admin' && !classId ? '1=1' : 'r.exam_id=e.id'}
+           ${userRole === 'admin' && classId ? 'AND EXISTS (SELECT 1 FROM student_classes sc WHERE sc.student_id = r.user_id AND sc.class_id = ?)' : ''}
+         ) attempt_count
          FROM exams e INNER JOIN users u ON u.id=e.user_id ${where}
-         ORDER BY e.id DESC LIMIT ? OFFSET ?`, [...params, pageSize, offset]
+         ORDER BY e.id DESC LIMIT ? OFFSET ?`,
+        [...(userRole === 'admin' && classId ? [Number(classId)] : []), ...params, pageSize, offset]
     );
     return { rows, total: countRows[0].total };
 };
@@ -900,7 +910,12 @@ const findUserById = async (userId) => {
 // ==================== 试卷维度分析 ====================
 
 // 按试卷维度统计：每道题的正确率 + 学生成绩列表 + 整体统计
-const getExamAnalytics = async (examId) => {
+const getExamAnalytics = async (examId, classId) => {
+    const selectedClassId = Number(classId);
+    const hasClassFilter = Number.isInteger(selectedClassId) && selectedClassId > 0;
+    const classRecordFilter = hasClassFilter
+        ? ' AND EXISTS (SELECT 1 FROM student_classes sc_filter WHERE sc_filter.student_id = r.user_id AND sc_filter.class_id = ?)'
+        : '';
     // 1. 试卷基本信息
     const [examRows] = await pool.query(
         `SELECT e.id, e.title, e.total_count, e.objective_count, e.subject, e.class_id, e.created_at,
@@ -913,23 +928,70 @@ const getExamAnalytics = async (examId) => {
     if (examRows.length === 0) return null;
     const exam = examRows[0];
 
-    // 2. 每道题的正确率统计（只统计每个学生最高分那次提交，与总体口径一致）
-    let questionStats = [];
+    // 2. 每道题的正确率统计
+    // 通过 exam_questions 获取题目顺序，JOIN exam_answers 统计每题被答情况
+    const questionStatsSql = hasClassFilter
+        ? `SELECT eq.question_id, eq.sort_order,
+                q.题目 AS question_text, q.题型 AS question_type, q.难度 AS difficulty, q.答案 AS correct_answer,
+                COUNT(a.id) AS answered_count,
+                SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) AS correct_count,
+                SUM(CASE WHEN a.is_correct = 0 THEN 1 ELSE 0 END) AS wrong_count,
+                SUM(CASE WHEN a.is_correct = 2 THEN 1 ELSE 0 END) AS skipped_count,
+                ROUND(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(a.id), 0), 2) AS accuracy
+         FROM \`exam_questions\` eq
+         LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         LEFT JOIN \`exam_records\` r ON r.exam_id = eq.exam_id${classRecordFilter}
+         LEFT JOIN \`exam_answers\` a ON a.record_id = r.id AND a.question_id = eq.question_id
+         WHERE eq.exam_id = ?
+         GROUP BY eq.question_id, eq.sort_order, q.题目, q.题型, q.难度, q.答案
+         ORDER BY eq.sort_order ASC`
+        : `SELECT eq.question_id, eq.sort_order,
+                q.题目 AS question_text, q.题型 AS question_type, q.难度 AS difficulty, q.答案 AS correct_answer,
+                COUNT(a.id) AS answered_count,
+                SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) AS correct_count,
+                SUM(CASE WHEN a.is_correct = 0 THEN 1 ELSE 0 END) AS wrong_count,
+                SUM(CASE WHEN a.is_correct = 2 THEN 1 ELSE 0 END) AS skipped_count,
+                ROUND(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(a.id), 0), 2) AS accuracy
+         FROM \`exam_questions\` eq
+         LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         LEFT JOIN \`exam_answers\` a ON a.question_id = eq.question_id
+         LEFT JOIN \`exam_records\` r ON r.id = a.record_id
+         WHERE eq.exam_id = ?
+         GROUP BY eq.question_id, eq.sort_order, q.题目, q.题型, q.难度, q.答案
+         ORDER BY eq.sort_order ASC`;
+    const [questionStats] = await pool.query(
+        questionStatsSql,
+        hasClassFilter ? [selectedClassId, examId] : [examId]
+    );
 
     // 3. 学生成绩列表（每人取最高分的一次记录，JS 去重）
     const [allStudentRows] = await pool.query(
         `SELECT r.id AS record_id, r.user_id, u.username, u.nickname, u.college, u.school,
                 r.score, r.accuracy, r.total_count, r.answered_count, r.correct_count,
                 r.wrong_count, r.skipped_count, r.duration_seconds,
-                r.started_at, r.submitted_at,
-                c.id AS class_id, c.name AS class_name
+                r.started_at, r.submitted_at
          FROM \`exam_records\` r
-         INNER JOIN \`users\` u ON r.user_id = u.id
-         LEFT JOIN \`student_classes\` sc ON sc.student_id = u.id
-         LEFT JOIN \`classes\` c ON c.id = sc.class_id
-         WHERE r.exam_id = ? AND u.role = 'student'
+         LEFT JOIN \`users\` u ON r.user_id = u.id
+         WHERE ${hasClassFilter ? 'r.exam_id = ? AND u.role = \'student\'' : '1 = 1'}${classRecordFilter}
          ORDER BY r.score DESC, r.accuracy DESC, r.submitted_at ASC`,
-        [examId]
+        hasClassFilter ? [examId, selectedClassId] : []
+    );
+
+    // 4. 整体统计
+    const [overview] = await pool.query(
+        `SELECT
+            COUNT(*) AS attempt_count,
+            COUNT(DISTINCT r.user_id) AS participant_count,
+            COALESCE(ROUND(AVG(score), 2), 0) AS avg_score,
+            COALESCE(ROUND(MAX(score), 2), 0) AS max_score,
+            COALESCE(ROUND(MIN(score), 2), 0) AS min_score,
+            COALESCE(ROUND(SUM(r.correct_count) * 100.0 / NULLIF(SUM(r.total_count), 0), 2), 0) AS avg_accuracy,
+            SUM(CASE WHEN score >= 60 THEN 1 ELSE 0 END) AS pass_count,
+            ROUND(SUM(CASE WHEN score >= 60 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0), 2) AS pass_rate
+         FROM \`exam_records\` r
+         LEFT JOIN \`users\` u ON r.user_id = u.id
+         WHERE ${hasClassFilter ? 'r.exam_id = ? AND u.role = \'student\'' : '1 = 1'}${classRecordFilter}`,
+        hasClassFilter ? [examId, selectedClassId] : []
     );
     const seenUsers = new Set();
     const studentResults = [];
@@ -967,61 +1029,42 @@ const getExamAnalytics = async (examId) => {
         questionStats = qRows;
     }
 
-    // 4. 整体统计（基于去重后的学生）
-    const overview = studentResults.length > 0
-        ? {
-            participant_count: studentResults.length,
-            avg_score: Math.round(studentResults.reduce((sum, r) => sum + Number(r.score), 0) * 100 / studentResults.length) / 100,
-            max_score: Math.max(...studentResults.map((r) => Number(r.score))),
-            min_score: Math.min(...studentResults.map((r) => Number(r.score))),
-            avg_accuracy: Math.round(studentResults.reduce((sum, r) => sum + Number(r.accuracy), 0) * 100 / studentResults.length) / 100,
-            pass_count: studentResults.filter((r) => Number(r.score) >= 60).length,
-            pass_rate: Math.round(studentResults.filter((r) => Number(r.score) >= 60).length * 10000 / studentResults.length) / 100,
-        }
-        : { participant_count: 0, avg_score: 0, max_score: 0, min_score: 0, avg_accuracy: 0, pass_count: 0, pass_rate: 0 };
-
-    // 5. 班级对比（基于去重后的学生）
-    const classMap = new Map();
-    studentResults.forEach((row) => {
-        const key = row.class_name || '未分班';
-        if (!classMap.has(key)) classMap.set(key, []);
-        classMap.get(key).push(row);
-    });
-    const classBreakdown = Array.from(classMap.entries()).map(([class_name, rows]) => ({
-        class_name,
-        participant_count: rows.length,
-        avg_score: Math.round(rows.reduce((sum, r) => sum + Number(r.score), 0) * 100 / rows.length) / 100,
-        max_score: Math.max(...rows.map((r) => Number(r.score))),
-        min_score: Math.min(...rows.map((r) => Number(r.score))),
-        avg_accuracy: Math.round(rows.reduce((sum, r) => sum + Number(r.accuracy), 0) * 100 / rows.length) / 100,
-        pass_count: rows.filter((r) => Number(r.score) >= 60).length,
-        pass_rate: Math.round(rows.filter((r) => Number(r.score) >= 60).length * 10000 / rows.length) / 100,
-    })).sort((a, b) => b.avg_score - a.avg_score);
-
-    // 6. 分数段分布（基于去重后的学生）
-    const ranges = [
-        { label: '不及格(0-59)', order: 1, min: 0, max: 59 },
-        { label: '及格(60-69)', order: 2, min: 60, max: 69 },
-        { label: '中等(70-79)', order: 3, min: 70, max: 79 },
-        { label: '良好(80-89)', order: 4, min: 80, max: 89 },
-        { label: '优秀(90-100)', order: 5, min: 90, max: 100 },
-    ];
-    const scoreDistribution = ranges.map((range) => ({
-        range_label: range.label,
-        range_order: range.order,
-        count: studentResults.filter((r) => Number(r.score) >= range.min && Number(r.score) <= range.max).length,
-    })).filter((item) => item.count > 0);
+    // 6. 分数段分布（供柱状图用）
+    const [scoreDistribution] = await pool.query(
+        `SELECT
+            CASE
+                WHEN score < 60 THEN '不及格(0-59)'
+                WHEN score < 70 THEN '及格(60-69)'
+                WHEN score < 80 THEN '中等(70-79)'
+                WHEN score < 90 THEN '良好(80-89)'
+                ELSE '优秀(90-100)'
+            END AS range_label,
+            CASE
+                WHEN score < 60 THEN 1
+                WHEN score < 70 THEN 2
+                WHEN score < 80 THEN 3
+                WHEN score < 90 THEN 4
+                ELSE 5
+            END AS range_order,
+            COUNT(*) AS count
+         FROM \`exam_records\` r
+         LEFT JOIN \`users\` u ON r.user_id = u.id
+         WHERE ${hasClassFilter ? 'r.exam_id = ? AND u.role = \'student\'' : '1 = 1'}${classRecordFilter}
+         GROUP BY range_label, range_order
+         ORDER BY range_order ASC`,
+        hasClassFilter ? [examId, selectedClassId] : []
+    );
 
     // 7. 及格/不及格人数（供饼图用）
-    const passCount = overview.pass_count || 0;
-    const failCount = overview.participant_count - passCount;
+    const passCount = overview[0]?.pass_count || 0;
+    const failCount = (overview[0]?.attempt_count || 0) - passCount;
 
     return {
         exam,
-        overview,
+        overview: overview[0] || { attempt_count: 0, participant_count: 0, avg_score: 0, max_score: 0, min_score: 0, avg_accuracy: 0, pass_count: 0, pass_rate: 0 },
         questionStats,
         studentResults,
-        classBreakdown,
+        selectedClassId: hasClassFilter ? selectedClassId : null,
         scoreDistribution,
         passFail: { pass: passCount, fail: failCount },
     };

@@ -51,6 +51,12 @@ const submit = async (data) => {
         throw error;
     }
 
+    if (existingRequest) {
+        const hashedPassword = bcrypt.hashSync(data.password, SALT_ROUNDS);
+        await registrationModel.reset(existingRequest.id, { ...data, password: hashedPassword });
+        return { id: existingRequest.id };
+    }
+
     const hashedPassword = bcrypt.hashSync(data.password, SALT_ROUNDS);
     return registrationModel.create({
         username,
@@ -95,7 +101,10 @@ const approve = async (id, reviewer) => {
 
     // 再次校验用户名未被占用
     const existingUser = await userModel.findByUsername(request.username);
-    if (existingUser) {
+    const isRecoverablePartialApproval = existingUser
+        && existingUser.role === request.role
+        && existingUser.password === request.password;
+    if (existingUser && !isRecoverablePartialApproval) {
         const error = new Error('该用户名已被占用，无法通过审核');
         error.statusCode = 409;
         error.errorCode = 40902;
@@ -103,7 +112,7 @@ const approve = async (id, reviewer) => {
     }
 
     // 创建正式用户（status=1 启用）
-    await userModel.create({
+    if (!existingUser) await userModel.create({
         username: request.username,
         password: request.password, // 申请时已 bcrypt 加密，直接复用
         role: request.role,

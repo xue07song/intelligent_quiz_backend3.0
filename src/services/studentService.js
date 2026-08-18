@@ -3,7 +3,7 @@ const questionModel = require('../models/questionModel');
 const userModel = require('../models/userModel');
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PHONE_PATTERN = /^\d{11}$/;
+const PHONE_PATTERN = /^1[3-9]\d{9}$/;
 
 const parsePage = (page, size) => {
     const currentPage = Math.max(parseInt(page, 10) || 1, 1);
@@ -59,8 +59,8 @@ const updateProfile = async (userId, data = {}) => {
     const updates = {};
     ['nickname', 'email', 'phone', 'school', 'college'].forEach((field) => {
         const value = data[field];
-        if (value !== undefined && value !== null && String(value).trim() !== '') {
-            updates[field] = String(value).trim();
+        if (value !== undefined) {
+            updates[field] = value === null ? '' : String(value).trim();
         }
     });
 
@@ -71,7 +71,7 @@ const updateProfile = async (userId, data = {}) => {
         throw error;
     }
     if (updates.phone && !PHONE_PATTERN.test(updates.phone)) {
-        const error = new Error('手机号必须是11位数字');
+        const error = new Error('请填写正规的中国大陆手机号');
         error.statusCode = 400;
         error.errorCode = 40001;
         throw error;
