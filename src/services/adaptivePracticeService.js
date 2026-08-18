@@ -202,7 +202,13 @@ const submit = async (userId, sessionId, body = {}) => {
         : { difficulty: Number(session.current_difficulty), signal: session.adjustment_signal,
             cooldown: session.cooldown_remaining, accuracy: null, changed: false,
             message: evaluation.status === 'partial' ? '本题部分掌握，当前难度保持不变。' : '本题等待复核，当前难度保持不变。' };
-    const saved = await model.saveAnswerAndState({ session, question: currentQuestion, userAnswer: answer, isCorrect: correct, adjustment });
+    const isReview = evaluation.status === 'review' || evaluation.reviewRequired === true;
+    const isCorrectValue = isReview ? 3 : (correct ? 1 : 0);
+    const correctIncrement = correct ? 1 : 0;
+    const saved = await model.saveAnswerAndState({
+        session, question: currentQuestion, userAnswer: answer,
+        isCorrectValue, correctIncrement, adjustment,
+    });
     const updated = await model.findSession(session.id, userId);
     const following = saved.complete ? null : await model.findNextQuestion(updated);
 
@@ -230,7 +236,14 @@ const getSession = async (userId, sessionId) => {
         question: next ? publicQuestion(next.question) : null, fallbackMessage: next?.fallbackMessage || '' };
 };
 
-const overview = async () => model.getOverview();
+const overview = async (actor) => {
+    let examIds = null;
+    if (actor && actor.role === 'teacher') {
+        const practiceModel = require('../models/practiceModel');
+        examIds = await practiceModel.findExamIdsByUser(actor.id);
+    }
+    return model.getOverview(examIds);
+};
 const progress = async (userId) => model.getStudentProgress(userId);
 
 module.exports = { inventory, start, submit, getSession, overview, progress };

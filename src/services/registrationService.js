@@ -8,8 +8,15 @@ const ALLOWED_ROLES = ['teacher', 'student'];
 
 // 提交注册申请
 const submit = async (data) => {
-    if (!data.username || !data.password) {
+    const username = String(data.username || '').trim();
+    if (!username || !data.password) {
         const error = new Error('用户名和密码不能为空');
+        error.statusCode = 400;
+        error.errorCode = 40001;
+        throw error;
+    }
+    if (username.length > 50) {
+        const error = new Error('用户名长度不能超过50个字符');
         error.statusCode = 400;
         error.errorCode = 40001;
         throw error;
@@ -28,7 +35,7 @@ const submit = async (data) => {
     }
 
     // 用户名在正式用户表和申请表中都不能重复
-    const existingUser = await userModel.findByUsername(data.username);
+    const existingUser = await userModel.findByUsername(username);
     if (existingUser) {
         const error = new Error('用户名已存在');
         error.statusCode = 409;
@@ -36,7 +43,7 @@ const submit = async (data) => {
         throw error;
     }
 
-    const existingRequest = await registrationModel.findByUsername(data.username);
+    const existingRequest = await registrationModel.findByUsername(username);
     if (existingRequest && existingRequest.status === 'pending') {
         const error = new Error('该用户名已有待审核的注册申请，请等待审核');
         error.statusCode = 409;
@@ -44,18 +51,24 @@ const submit = async (data) => {
         throw error;
     }
 
+    if (existingRequest) {
+        const hashedPassword = bcrypt.hashSync(data.password, SALT_ROUNDS);
+        await registrationModel.reset(existingRequest.id, { ...data, password: hashedPassword });
+        return { id: existingRequest.id };
+    }
+
     const hashedPassword = bcrypt.hashSync(data.password, SALT_ROUNDS);
     return registrationModel.create({
-        username: data.username,
+        username,
         password: hashedPassword,
         role: data.role,
-        college: data.college,
-        major: data.major,
-        subjects: data.subjects,
-        grade: data.grade,
-        student_no: data.student_no,
-        employee_no: data.employee_no,
-        title: data.title,
+        college: data.college ? String(data.college).trim() : null,
+        major: data.major ? String(data.major).trim() : null,
+        subjects: data.subjects ? String(data.subjects).trim() : null,
+        grade: data.grade ? String(data.grade).trim() : null,
+        student_no: data.student_no ? String(data.student_no).trim() : null,
+        employee_no: data.employee_no ? String(data.employee_no).trim() : null,
+        title: data.title ? String(data.title).trim() : null,
     });
 };
 
@@ -65,7 +78,7 @@ const list = async (options) => {
 };
 
 // 审核通过：创建正式用户 + 更新申请状态
-const approve = async (id, reviewerId) => {
+const approve = async (id, reviewer) => {
     const request = await registrationModel.findById(id);
     if (!request) {
         const error = new Error('注册申请不存在');
@@ -79,10 +92,19 @@ const approve = async (id, reviewerId) => {
         error.errorCode = 40004;
         throw error;
     }
+    if (reviewer.role === 'teacher' && request.role === 'teacher') {
+        const error = new Error('教师只能审核学生注册申请，教师申请需由管理员审核');
+        error.statusCode = 403;
+        error.errorCode = 40301;
+        throw error;
+    }
 
     // 再次校验用户名未被占用
     const existingUser = await userModel.findByUsername(request.username);
-    if (existingUser) {
+    const isRecoverablePartialApproval = existingUser
+        && existingUser.role === request.role
+        && existingUser.password === request.password;
+    if (existingUser && !isRecoverablePartialApproval) {
         const error = new Error('该用户名已被占用，无法通过审核');
         error.statusCode = 409;
         error.errorCode = 40902;
@@ -90,7 +112,7 @@ const approve = async (id, reviewerId) => {
     }
 
     // 创建正式用户（status=1 启用）
-    await userModel.create({
+    if (!existingUser) await userModel.create({
         username: request.username,
         password: request.password, // 申请时已 bcrypt 加密，直接复用
         role: request.role,
@@ -136,12 +158,12 @@ const approve = async (id, reviewerId) => {
 
     return registrationModel.updateStatus(id, {
         status: 'approved',
-        reviewed_by: reviewerId,
+        reviewed_by: reviewer.id,
     });
 };
 
 // 审核拒绝
-const reject = async (id, reviewerId, reason) => {
+const reject = async (id, reviewer, reason) => {
     const request = await registrationModel.findById(id);
     if (!request) {
         const error = new Error('注册申请不存在');
@@ -155,11 +177,17 @@ const reject = async (id, reviewerId, reason) => {
         error.errorCode = 40004;
         throw error;
     }
+    if (reviewer.role === 'teacher' && request.role === 'teacher') {
+        const error = new Error('教师只能审核学生注册申请，教师申请需由管理员审核');
+        error.statusCode = 403;
+        error.errorCode = 40301;
+        throw error;
+    }
 
     return registrationModel.updateStatus(id, {
         status: 'rejected',
         reject_reason: reason,
-        reviewed_by: reviewerId,
+        reviewed_by: reviewer.id,
     });
 };
 

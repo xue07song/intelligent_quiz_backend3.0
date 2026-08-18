@@ -55,6 +55,7 @@ const ensureSchema = async () => {
 const start = async () => {
     await ensureSchema();
     await ensureCompatibleSchema();
+    warnDeployment();
     return app.listen(port, () => {
         console.log(`🚀 智能题库后端服务已启动！`);
         console.log(`📍 监听地址: http://localhost:${port}`);
@@ -63,6 +64,23 @@ const start = async () => {
         console.log(`📋 测试接口示例: GET http://localhost:${port}/api/v1/questions`);
         console.log(`💓 健康检查: GET http://localhost:${port}/health`);
     });
+};
+
+const warnDeployment = () => {
+    const jwtSecret = process.env.JWT_SECRET || '';
+    if (!jwtSecret || jwtSecret === 'dev-secret-change-me' || jwtSecret.includes('请替换')) {
+        console.warn('⚠️ JWT_SECRET 未设置或仍为默认值，请上线前替换为随机字符串');
+    }
+    const dbPass = process.env.DB_PASS || '';
+    if (['123456', 'root', 'password'].includes(dbPass)) {
+        console.warn('⚠️ 数据库口令过弱，请上线前修改并改用环境变量注入');
+    }
+    for (const key of ['GLM_API_KEY', 'DEEPSEEK_API_KEY']) {
+        const value = process.env[key] || '';
+        if (!value || value.includes('请填写') || value.includes('your_key')) {
+            console.warn(`⚠️ ${key} 未配置或仍为占位值`);
+        }
+    }
 };
 
 if (require.main === module) {

@@ -108,15 +108,23 @@ const create = async (data) => {
 };
 
 const reset = async (id, data) => {
-    const [result] = await pool.query(
-        `UPDATE ${TABLE}
-         SET password = ?, role = ?, nickname = ?, status = 'pending',
-             reject_reason = NULL, handled_by = NULL, handled_at = NULL,
-             reviewed_by = NULL, reviewed_at = NULL,
-             created_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [data.password, data.role, data.nickname ?? null, id]
-    );
+    const actual = new Set(await getActualColumns());
+    const values = { password: data.password, role: data.role, nickname: data.nickname ?? null,
+        college: data.college ?? null, major: data.major ?? null, subjects: data.subjects ?? null,
+        grade: data.grade ?? null, student_no: data.student_no ?? null,
+        employee_no: data.employee_no ?? null, title: data.title ?? null };
+    const sets = [];
+    const params = [];
+    for (const [column, value] of Object.entries(values)) {
+        if (actual.has(column)) { sets.push(`\`${column}\` = ?`); params.push(value); }
+    }
+    sets.push("status = 'pending'");
+    for (const column of ['reject_reason', 'handled_by', 'handled_at', 'reviewed_by', 'reviewed_at']) {
+        if (actual.has(column)) sets.push(`\`${column}\` = NULL`);
+    }
+    if (actual.has('created_at')) sets.push('created_at = CURRENT_TIMESTAMP');
+    params.push(id);
+    const [result] = await pool.query(`UPDATE ${TABLE} SET ${sets.join(', ')} WHERE id = ?`, params);
     return result;
 };
 
@@ -145,23 +153,16 @@ const markRejected = async (id, reason, handledBy) => {
 
 // 兼容 review 语义：updateStatus（status / reject_reason / reviewed_by / reviewed_at）
 const updateStatus = async (id, data) => {
-    const [result] = await pool.query(
-        `UPDATE ${TABLE} SET
-             status = ?,
-             reject_reason = ?,
-             reviewed_by = ?,
-             reviewed_at = NOW(),
-             handled_by = COALESCE(?, handled_by),
-             handled_at = COALESCE(NOW(), handled_at)
-         WHERE id = ?`,
-        [
-            data.status,
-            data.reject_reason ?? null,
-            data.reviewed_by,
-            data.reviewed_by ?? null,
-            id,
-        ]
-    );
+    const actual = new Set(await getActualColumns());
+    const sets = ['status = ?'];
+    const params = [data.status];
+    if (actual.has('reject_reason')) { sets.push('reject_reason = ?'); params.push(data.reject_reason ?? null); }
+    if (actual.has('reviewed_by')) { sets.push('reviewed_by = ?'); params.push(data.reviewed_by ?? null); }
+    if (actual.has('reviewed_at')) sets.push('reviewed_at = NOW()');
+    if (actual.has('handled_by')) { sets.push('handled_by = ?'); params.push(data.reviewed_by ?? null); }
+    if (actual.has('handled_at')) sets.push('handled_at = NOW()');
+    params.push(id);
+    const [result] = await pool.query(`UPDATE ${TABLE} SET ${sets.join(', ')} WHERE id = ?`, params);
     return result;
 };
 

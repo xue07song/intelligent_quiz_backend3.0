@@ -259,9 +259,10 @@ const updateProfile = async (id, data) => {
     const allowedFields = ['nickname', 'email', 'phone', 'school', 'college', 'student_no', 'employee_no', 'major', 'grade', 'title'];
 
     for (const field of allowedFields) {
-        if (data[field] !== undefined && data[field] !== null && String(data[field]).trim() !== '') {
+        if (data[field] !== undefined) {
             fields.push(`${field} = ?`);
-            params.push(String(data[field]).trim());
+            const value = data[field] === null ? '' : String(data[field]).trim();
+            params.push(value || null);
         }
     }
 

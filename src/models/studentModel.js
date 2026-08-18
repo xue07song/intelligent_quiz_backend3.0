@@ -27,7 +27,9 @@ const countHistoryQuestions = async (userId) => {
 const findHistoryQuestions = async (userId, { page, size }) => {
     const offset = (page - 1) * size;
     const [rows] = await pool.query(
-        `SELECT a.question_id AS questionId, q.题目 AS title, q.题型 AS questionType,
+        `SELECT a.question_id AS questionId,
+                COALESCE(eq.snapshot_题目, q.题目) AS title,
+                COALESCE(eq.snapshot_题型, q.题型) AS questionType,
                 a.user_answer AS userAnswer, a.correct_answer AS correctAnswer,
                 a.is_correct AS isCorrect, r.submitted_at AS answeredAt
          FROM \`exam_answers\` a

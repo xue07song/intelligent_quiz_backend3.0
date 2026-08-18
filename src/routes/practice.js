@@ -38,6 +38,14 @@ router.get('/exams/:id/export', requireRoles('admin', 'teacher'), practiceContro
 // 试卷详情（含题目）
 router.get('/exams/:id', practiceController.getExam);
 
+// 学生开始作答（服务端记录开始时间）
+router.post('/exams/:id/start', requireRoles('student'), practiceController.startExam);
+
+// 试卷生命周期管理（教师本人/管理员）
+router.patch('/exams/:id/status', requireRoles('admin', 'teacher'), practiceController.updateExamStatus);
+router.put('/exams/:id', requireRoles('admin', 'teacher'), practiceController.updateExam);
+router.delete('/exams/:id', requireRoles('admin', 'teacher'), practiceController.removeExam);
+
 // 试卷维度分析（每题正确率 + 学生成绩 + 整体统计 + 班级对比 + 分数段）
 router.get('/exams/:id/analytics', requireRoles('admin', 'teacher'), practiceController.examAnalytics);
 

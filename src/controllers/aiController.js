@@ -14,14 +14,20 @@ const generate = async (req, res, next) => {
 // 1.1 入库审核后的题目
 const save = async (req, res, next) => {
     try {
-        const { questions } = req.body;
+        const { questions, subject } = req.body;
         if (!Array.isArray(questions) || questions.length === 0) {
             const err = new Error('请提交待入库的题目数组');
             err.statusCode = 400;
             err.errorCode = 40001;
             throw err;
         }
-        const result = await aiService.saveGenerated(questions);
+        if (!subject || !String(subject).trim()) {
+            const err = new Error('请选择入库科目');
+            err.statusCode = 400;
+            err.errorCode = 40001;
+            throw err;
+        }
+        const result = await aiService.saveGenerated(questions, subject, req.user);
         res.status(201).json(success(result, `✅ 导入完成：成功 ${result.inserted} 条，跳过 ${result.skipped} 条`));
     } catch (err) {
         next(err);
@@ -41,7 +47,7 @@ const tutor = async (req, res, next) => {
 // 3. AI 智能组卷
 const smartExam = async (req, res, next) => {
     try {
-        const result = await aiService.smartGenerateExam(req.user.id, req.body);
+        const result = await aiService.smartGenerateExam(req.user, req.body);
         res.status(201).json(success(result, '✅ AI 智能组卷完成'));
     } catch (err) {
         next(err);

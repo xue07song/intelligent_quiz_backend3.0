@@ -100,7 +100,7 @@ const getRecord = async (req, res, next) => {
 
 const statistics = async (req, res, next) => {
     try {
-        const stats = await practiceService.getStats(req.user.id);
+        const stats = await practiceService.getStats(req.user.id, req.user.role);
         res.json(success(stats));
     } catch (err) {
         next(err);
@@ -180,7 +180,7 @@ const adminListRecords = async (req, res, next) => {
 const adminListUsers = async (req, res, next) => {
     try {
         const role = req.query.role;
-        const result = await practiceService.adminListUsers(req.user.role, { role });
+        const result = await practiceService.adminListUsers(req.user.role, req.user.id, { role });
         res.json(success(result));
     } catch (err) {
         next(err);
@@ -191,7 +191,7 @@ const adminListUserRecords = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const pageSize = parseInt(req.query.pageSize) || 20;
-        const result = await practiceService.adminListUserRecords(req.user.role, req.params.userId, { page, pageSize });
+        const result = await practiceService.adminListUserRecords(req.user.role, req.user.id, req.params.userId, { page, pageSize });
         res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) {
         next(err);
@@ -200,7 +200,7 @@ const adminListUserRecords = async (req, res, next) => {
 
 const adminGetUserStats = async (req, res, next) => {
     try {
-        const stats = await practiceService.adminGetUserStats(req.user.role, req.params.userId);
+        const stats = await practiceService.adminGetUserStats(req.user.role, req.user.id, req.params.userId);
         res.json(success(stats));
     } catch (err) {
         next(err);
@@ -209,7 +209,7 @@ const adminGetUserStats = async (req, res, next) => {
 
 const adminGetRecord = async (req, res, next) => {
     try {
-        const record = await practiceService.adminGetRecord(req.user.role, req.params.id);
+        const record = await practiceService.adminGetRecord(req.user.role, req.user.id, req.params.id);
         res.json(success(record));
     } catch (err) {
         next(err);
@@ -242,7 +242,7 @@ const saveExamDraft = async (req, res, next) => {
 const adminGetAllStats = async (req, res, next) => {
     try {
         const role = req.query.role;
-        const result = await practiceService.adminGetAllStatsByUser(req.user.role, { role });
+        const result = await practiceService.adminGetAllStatsByUser(req.user.role, req.user.id, { role });
         res.json(success(result));
     } catch (err) {
         next(err);
@@ -251,7 +251,7 @@ const adminGetAllStats = async (req, res, next) => {
 
 const examAnalytics = async (req, res, next) => {
     try {
-        const result = await practiceService.getExamAnalytics(req.user, req.params.id);
+        const result = await practiceService.getExamAnalytics(req.user, req.params.id, req.query.classId);
         res.json(success(result));
     } catch (err) {
         next(err);
