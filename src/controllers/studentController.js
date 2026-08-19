@@ -78,6 +78,78 @@ const removeFavorite = async (req, res, next) => {
     }
 };
 
+const favoriteTags = async (req, res, next) => {
+    try {
+        const data = await studentService.getFavoriteTags(req.user.id);
+        res.json(ok(data));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const createFavoriteTag = async (req, res, next) => {
+    try {
+        const data = await studentService.createFavoriteTag(req.user.id, req.body);
+        res.json(ok(data, '标签创建成功'));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const deleteFavoriteTag = async (req, res, next) => {
+    try {
+        const data = await studentService.deleteFavoriteTag(req.user.id, req.params.tagId);
+        res.json(ok(data, '标签已删除'));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const favoriteTagsOfQuestion = async (req, res, next) => {
+    try {
+        const data = await studentService.getFavoriteQuestionTags(req.user.id, req.params.questionId);
+        res.json(ok(data));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const setFavoriteTagsOfQuestion = async (req, res, next) => {
+    try {
+        const data = await studentService.setFavoriteTags(req.user.id, req.params.questionId, req.body.tagIds);
+        res.json(ok(data, '标签设置成功'));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const reviewSchedule = async (req, res, next) => {
+    try {
+        const data = await studentService.getReviewSchedule(req.user.id, req.query);
+        res.json(ok(data));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const submitFavoriteReview = async (req, res, next) => {
+    try {
+        const data = await studentService.submitFavoriteReview(req.user.id, req.params.questionId, req.body);
+        res.json(ok(data, '复习记录已保存'));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const favoriteStats = async (req, res, next) => {
+    try {
+        const data = await studentService.getFavoriteStats(req.user.id);
+        res.json(ok(data));
+    } catch (err) {
+        next(err);
+    }
+};
+
 module.exports = {
     profile,
     updateProfile,
@@ -87,4 +159,12 @@ module.exports = {
     favorites,
     addFavorite,
     removeFavorite,
+    favoriteTags,
+    createFavoriteTag,
+    deleteFavoriteTag,
+    favoriteTagsOfQuestion,
+    setFavoriteTagsOfQuestion,
+    reviewSchedule,
+    submitFavoriteReview,
+    favoriteStats,
 };

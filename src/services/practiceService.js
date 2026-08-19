@@ -457,6 +457,41 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
     try { await practiceModel.deleteDraft(userId, examId); } catch (_) { /* ignore */ }
     await practiceModel.markAttemptSubmitted(examId, userId, attempt.attempt_no);
 
+    // 自动为收藏题目记录复习结果（遗忘曲线）
+    try {
+        const studentModel = require('../models/studentModel');
+        for (const rec of answerRecords) {
+            if (rec.isCorrect === 0 || rec.isCorrect === 1) {
+                const fav = await studentModel.findFavorite(userId, String(rec.questionId));
+                if (fav) {
+                    const lastReview = await studentModel.findLatestReview(userId, String(rec.questionId));
+                    // 内联计算遗忘曲线
+                    const isCorrect = rec.isCorrect === 1;
+                    const easeFactor = lastReview ? Math.max(1.3, Number(lastReview.easeFactor) || 2.5) : 2.5;
+                    const lastInterval = lastReview ? Number(lastReview.intervalDays) || 1 : 0;
+                    let newInterval, newEaseFactor = easeFactor;
+                    if (!isCorrect) {
+                        newInterval = 1;
+                        newEaseFactor = Math.max(1.3, easeFactor - 0.2);
+                    } else {
+                        if (lastInterval === 0) newInterval = 1;
+                        else if (lastInterval === 1) newInterval = 3;
+                        else newInterval = Math.round(lastInterval * easeFactor);
+                        newEaseFactor = Math.min(3.0, easeFactor + 0.1);
+                    }
+                    const nextReviewAt = new Date();
+                    nextReviewAt.setDate(nextReviewAt.getDate() + newInterval);
+                    await studentModel.addReview(userId, String(rec.questionId), {
+                        result: isCorrect ? 1 : 0,
+                        intervalDays: newInterval,
+                        easeFactor: Number(newEaseFactor.toFixed(2)),
+                        nextReviewAt: nextReviewAt.toISOString().slice(0, 19).replace('T', ' '),
+                    });
+                }
+            }
+        }
+    } catch (_) { /* 忽略复习记录失败，不影响提交 */ }
+
     return {
         recordId,
         totalCount: exam.questions.length,
@@ -588,21 +623,36 @@ const listWrongQuestions = async (userId, options = {}) => {
 // 错题本：基于当前错题重新组卷练习
 const createWrongExam = async (userId, options = {}) => {
     const requestedCount = Math.min(Math.max(Number(options.count) || 20, 1), 100);
-    const filter = {
-        chapter: options.chapter,
-        questionType: options.questionType,
-    };
 
-    const wrongIds = await practiceModel.findWrongQuestionIds(userId, filter);
-    if (wrongIds.length === 0) {
-        const error = new Error('错题本中暂无符合条件的题目，先做一套试卷吧');
-        error.statusCode = 404;
-        error.errorCode = 40401;
-        throw error;
+    // 支持直接传入 questionIds（收藏复习场景）
+    let questionIds;
+    let questions;
+    if (Array.isArray(options.questionIds) && options.questionIds.length > 0) {
+        questionIds = options.questionIds.map(String);
+        questions = await practiceModel.randomPickByIds(questionIds, Math.min(requestedCount, questionIds.length));
+        if (questions.length === 0) {
+            const error = new Error('指定的题目不存在');
+            error.statusCode = 404;
+            error.errorCode = 40401;
+            throw error;
+        }
+    } else {
+        const filter = {
+            chapter: options.chapter,
+            questionType: options.questionType,
+        };
+        const wrongIds = await practiceModel.findWrongQuestionIds(userId, filter);
+        if (wrongIds.length === 0) {
+            const error = new Error('错题本中暂无符合条件的题目，先做一套试卷吧');
+            error.statusCode = 404;
+            error.errorCode = 40401;
+            throw error;
+        }
+        const pickCount = Math.min(requestedCount, wrongIds.length);
+        questions = await practiceModel.randomPickByIds(wrongIds, pickCount);
+        questionIds = wrongIds;
     }
 
-    const pickCount = Math.min(requestedCount, wrongIds.length);
-    const questions = await practiceModel.randomPickByIds(wrongIds, pickCount);
     const title = options.title || `错题重练-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
     const { examId, objectiveCount } = await practiceModel.createExam({
         userId,
@@ -618,7 +668,7 @@ const createWrongExam = async (userId, options = {}) => {
         title,
         total: questions.length,
         requestedCount,
-        availableCount: wrongIds.length,
+        availableCount: questionIds.length,
         truncated: questions.length < requestedCount,
         objectiveCount,
         questions,

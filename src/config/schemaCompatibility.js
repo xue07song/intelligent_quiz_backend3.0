@@ -172,6 +172,75 @@ const ensureCompatibleSchema = async () => {
         KEY idx_fav_user (user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户题目收藏表'`);
 
+    // 收藏标签表（预设+自定义）
+    await pool.query(`CREATE TABLE IF NOT EXISTS user_favorite_tags (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL COMMENT '0 表示系统预设标签',
+        name VARCHAR(50) NOT NULL,
+        type ENUM('preset','custom') NOT NULL DEFAULT 'custom',
+        color VARCHAR(20) DEFAULT '#6366F1',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_user_tag_name (user_id, name),
+        KEY idx_tag_user (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='收藏标签表'`);
+
+    // 收藏题目标签关联表
+    await pool.query(`CREATE TABLE IF NOT EXISTS user_favorite_question_tags (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        question_id VARCHAR(50) NOT NULL,
+        tag_id INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_user_question_tag (user_id, question_id, tag_id),
+        KEY idx_uqtag_user_question (user_id, question_id),
+        KEY idx_uqtag_tag (tag_id),
+        CONSTRAINT fk_uqtag_tag FOREIGN KEY (tag_id) REFERENCES user_favorite_tags(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='收藏题目标签关联表'`);
+
+    // 收藏题目复习记录表（遗忘曲线）
+    await pool.query(`CREATE TABLE IF NOT EXISTS user_favorite_reviews (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        question_id VARCHAR(50) NOT NULL,
+        result VARCHAR(20) NOT NULL DEFAULT 'forgot' COMMENT 'remembered | forgot',
+        interval_days INT NOT NULL DEFAULT 1 COMMENT '本次间隔天数',
+        next_review_at DATETIME NOT NULL COMMENT '下次复习时间',
+        reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_review_user_question (user_id, question_id),
+        KEY idx_review_user_next (user_id, next_review_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='收藏题目复习记录表（遗忘曲线）'`);
+
+    // 兼容旧表：将 result 列从 TINYINT 改为 VARCHAR（幂等）
+    try {
+        const [cols] = await pool.query(
+            `SELECT DATA_TYPE FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_favorite_reviews' AND COLUMN_NAME = 'result'`
+        );
+        if (cols[0] && cols[0].DATA_TYPE !== 'varchar') {
+            await pool.query(`ALTER TABLE user_favorite_reviews MODIFY COLUMN result VARCHAR(20) NOT NULL DEFAULT 'forgot' COMMENT 'remembered | forgot'`);
+        }
+    } catch (_) { /* 幂等忽略 */ }
+
+    // 初始化系统预设收藏标签（仅 3 条，颜色与契约一致）
+    const presetTags = [
+        { name: '易错', color: '#EF4444' },
+        { name: '常考', color: '#3B82F6' },
+        { name: '难题', color: '#8B5CF6' },
+    ];
+    for (const tag of presetTags) {
+        await pool.query(
+            `INSERT INTO user_favorite_tags (user_id, name, type, color) VALUES (0, ?, 'preset', ?)
+             ON DUPLICATE KEY UPDATE color = VALUES(color), type = 'preset'`,
+            [tag.name, tag.color]
+        );
+    }
+    // 清理旧的多余预设标签（重点/不熟等）
+    try {
+        await pool.query(
+            `DELETE FROM user_favorite_tags WHERE user_id = 0 AND name NOT IN ('易错', '常考', '难题')`
+        );
+    } catch (_) { /* 幂等忽略 */ }
+
     // 用户反馈表（模型使用 feedbacks 表名，字段需与 feedbackModel.js LIST_SELECT / DETAIL_SELECT 一致）
     await pool.query(`CREATE TABLE IF NOT EXISTS feedbacks (
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
