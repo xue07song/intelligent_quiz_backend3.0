@@ -14,12 +14,15 @@ const group = (rows, key) => Object.values(rows.reduce((map, row) => {
     return map;
 }, {})).map(item => { const accuracy=pct(item.correct,item.answered); const masteryScore=Math.round((item.correct+3)*100/(item.answered+5)); return { ...item, accuracy, masteryScore, sampleLevel:item.answered>=10?'充分':item.answered>=5?'一般':'较少', sourceCount:item.sources.size, sources:undefined }; });
 
-const teacherExamIds = async (teacherId) => {
-    const practiceModel = require('../models/practiceModel');
-    return practiceModel.findExamIdsByUser(teacherId);
-};
-
-const analyze = async (userId, examIds = null) => {
+const analyze = async (userId, caller = null) => {
+    let examIds = null;
+    if (caller && caller.role === 'teacher') {
+        const practiceModel = require('../models/practiceModel');
+        examIds = await practiceModel.findExamIdsByUser(caller.id);
+    }
+    if (caller && caller.role === 'admin') {
+        examIds = null;
+    }
     const student = await model.getStudent(userId);
     if (!student) throw Object.assign(new Error('学生不存在'), { statusCode: 404 });
     const [records, examRows, adaptiveRows] = await Promise.all([
@@ -29,13 +32,23 @@ const analyze = async (userId, examIds = null) => {
         ...row,
         difficulty: normalizeDifficultyLevel(row.difficulty),
         knowledgePoint: String(row.knowledgePoint || '').trim() || '未标注知识点',
+        chapter: String(row.chapter || '').trim(),
     }));
+    const normalizedAdaptiveRows = adaptiveRows.map((row) => ({
+        ...row,
+        difficulty: normalizeDifficultyLevel(row.difficulty),
+        knowledgePoint: String(row.knowledgePoint || '').trim() || '未标注知识点',
+        chapter: String(row.chapter || '').trim(),
+    }));
+    // 自适应填空/简答/程序题在提交时 isCorrect 可能为 3（待复核），
+    // 学情分析只统计已决结果（0/1），避免把未复核题当成错题。
+    const conclusiveAdaptiveRows = normalizedAdaptiveRows.filter(row => [0, 1].includes(Number(row.isCorrect)));
     const answers = [
         ...normalizedExamRows.map(row => ({ ...row, source: '试卷' })),
-        ...adaptiveRows.map(row => ({ ...row, source: '自适应练习' })),
+        ...conclusiveAdaptiveRows.map(row => ({ ...row, source: '自适应练习' })),
     ].sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt));
     const answered = answers.length, correct = answers.filter(row => Number(row.isCorrect) === 1).length;
-    const chapters = group(answers.filter(row => row.chapter), 'chapter').sort((a,b)=>Number(a.key)-Number(b.key));
+    const chapters = group(answers.filter(row => row.chapter && /^([1-9]|10)$/.test(String(row.chapter).trim())), 'chapter').sort((a,b)=>Number(a.key)-Number(b.key));
     const knowledge = group(answers, 'knowledgePoint').sort((a,b)=>a.accuracy-b.accuracy || b.answered-a.answered).slice(0, 15);
     const types = group(answers, 'questionType').sort((a,b)=>Number(a.key)-Number(b.key));
     const difficulty = group(answers.filter(row => row.difficulty), 'difficulty').sort((a,b)=>Number(a.key)-Number(b.key));
@@ -70,16 +83,22 @@ const analyze = async (userId, examIds = null) => {
     if (weak) recommendations.push({ title:`巩固“${weak.key}”`, reason:`已完成${weak.answered}题，正确率${weak.accuracy}%`, action:'adaptive', filters:{knowledgeKeyword:weak.key} });
     if (weakChapter) recommendations.push({ title:`复习第${weakChapter.key}章`, reason:`本章正确率${weakChapter.accuracy}%`, action:'adaptive', filters:{chapters:[Number(weakChapter.key)]} });
     if (stableDifficulty) recommendations.push({ title:`从${stableDifficulty}星附近继续挑战`, reason:'这是目前有足够样本且正确率达到70%的最高难度', action:'adaptive', filters:{} });
-    return { student, generatedAt:new Date(), coverage:{ examAnswers:examRows.length, examCorrect:examRows.filter(x=>Number(x.isCorrect)===1).length, adaptiveAnswers:adaptiveRows.length, adaptiveCorrect:adaptiveRows.filter(x=>Number(x.isCorrect)===1).length, examCount:records.length },
+    return { student, generatedAt:new Date(), coverage:{ examAnswers:examRows.length, examCorrect:examRows.filter(x=>Number(x.isCorrect)===1).length, adaptiveAnswers:conclusiveAdaptiveRows.length, adaptiveCorrect:conclusiveAdaptiveRows.filter(x=>Number(x.isCorrect)===1).length, examCount:records.length },
         summary:{ answered, correct, accuracy:pct(correct,answered), confidence, recentAccuracy, change:previous.length?recentAccuracy-previousAccuracy:null, stableDifficulty, recovered, wrongQuestions:wrongByQuestion.length },
-        chapters, knowledge, types, difficulty, examTrend:records.slice(-12).map(r=>({ label:r.title||`试卷${r.id}`, score:Number(r.score), accuracy:Number(r.accuracy), date:r.submitted_at })),
+        chapters, knowledge, types, difficulty,
+        examTrend:records.slice(-12).map(r=>({ label:r.title||`试卷${r.id}`, score:Number(r.score), accuracy:Number(r.accuracy), date:r.submitted_at })),
         insights:{ retention, migration, pace:{ averageSeconds:Math.round(avgSeconds), meaning:'按整卷总用时估算每题节奏；目前未采集单题停留时间，因此不判断某一道题是否过快。' } }, wrongQuestions:{ exam:wrongQuestions.filter(x=>x.source==='试卷'), adaptive:wrongQuestions.filter(x=>x.source==='自适应练习') }, dailyTrend, recommendations };
 };
 
-const overview = async () => {
-    const students = await model.getStudents();
-    const classes = await model.getClasses();
-    const analyses = await Promise.all(students.map(student => analyze(student.id)));
+const overview = async (caller) => {
+    let subjects = null;
+    if (caller && caller.role === 'teacher') {
+        const userModel = require('../models/userModel');
+        subjects = await userModel.getTeacherSubjects(caller.id);
+    }
+    const students = await model.getStudents(subjects);
+    const classes = await model.getClasses(subjects);
+    const analyses = await Promise.all(students.map(student => analyze(student.id, caller)));
     const aggregateWeaknesses = list => Object.values(list.flatMap(a=>a.knowledge).reduce((m,x)=>{const i=m[x.key]||={key:x.key,answered:0,correct:0,students:0};i.answered+=x.answered;i.correct+=x.correct;i.students++;m[x.key]=i;return m},{})).map(x=>({...x,accuracy:pct(x.correct,x.answered)})).filter(x=>x.students>=2).sort((a,b)=>a.accuracy-b.accuracy).slice(0,8);
     const classWeaknesses = {};
     classes.forEach(c => { classWeaknesses[c.name] = aggregateWeaknesses(analyses.filter(a => a.student.className === c.name)); });
@@ -88,4 +107,4 @@ const overview = async () => {
         commonWeaknesses:aggregateWeaknesses(analyses), classWeaknesses };
 };
 
-module.exports = { analyze, overview, teacherExamIds };
+module.exports = { analyze, overview };

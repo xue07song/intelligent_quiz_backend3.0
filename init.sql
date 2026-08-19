@@ -79,22 +79,50 @@ CREATE TABLE IF NOT EXISTS `exams` (
   question_type VARCHAR(50) COMMENT '题型筛选',
   difficulty VARCHAR(50) COMMENT '难度筛选',
   subject VARCHAR(50) DEFAULT NULL COMMENT '试卷所属科目（教师组卷时必填，对应其所教科目）',
-  class_id INT DEFAULT NULL COMMENT '目标班级ID（可选，指定后该班学生可见此试卷）',
+  class_id INT DEFAULT NULL COMMENT '目标班级ID（冗余，历史兼容；多选班级看 exam_classes 表）',
+  status ENUM('draft','published','closed') NOT NULL DEFAULT 'published' COMMENT '试卷状态：draft草稿 published已发布 closed已关闭',
+  duration_minutes INT DEFAULT NULL COMMENT '限时答题（分钟），NULL表示不限时',
+  start_at DATETIME DEFAULT NULL COMMENT '允许开始答题时间（NULL表示随时可开始）',
+  end_at DATETIME DEFAULT NULL COMMENT '截止答题时间（NULL表示不截止）',
+  max_attempts INT DEFAULT NULL COMMENT '最大作答次数（NULL表示不限）',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   INDEX idx_user (user_id),
   INDEX idx_subject (subject),
-  INDEX idx_class (class_id)
+  INDEX idx_class (class_id),
+  INDEX idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='练习试卷表';
 
--- 试卷题目关联表
+-- 试卷题目关联表（含题目快照，防止题库原题修改后历史作答失真）
 CREATE TABLE IF NOT EXISTS `exam_questions` (
   id INT AUTO_INCREMENT PRIMARY KEY,
   exam_id INT NOT NULL COMMENT '试卷ID',
   question_id VARCHAR(50) NOT NULL COMMENT '题库题目ID',
   sort_order INT NOT NULL DEFAULT 0 COMMENT '题目顺序',
+  snapshot_章节 INT DEFAULT NULL COMMENT '快照：章节',
+  snapshot_题型 INT DEFAULT NULL COMMENT '快照：题型',
+  snapshot_序号 INT DEFAULT NULL COMMENT '快照：序号',
+  snapshot_题目 TEXT COMMENT '快照：题干',
+  snapshot_选项 TEXT COMMENT '快照：选项',
+  snapshot_答案 VARCHAR(500) COMMENT '快照：正确答案',
+  snapshot_解析 TEXT COMMENT '快照：解析',
+  snapshot_难度 VARCHAR(10) COMMENT '快照：难度',
+  snapshot_知识点 VARCHAR(255) COMMENT '快照：知识点',
   INDEX idx_exam (exam_id),
   INDEX idx_question (question_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='试卷题目关联表';
+
+-- 作答尝试表（服务端计时与次数控制，每 startExam 一次插入一条新 attempt）
+CREATE TABLE IF NOT EXISTS `exam_attempts` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+  exam_id INT NOT NULL COMMENT '试卷ID exams.id',
+  user_id INT NOT NULL COMMENT '学生ID users.id',
+  attempt_no INT NOT NULL DEFAULT 1 COMMENT '第几次作答（从1开始递增）',
+  started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '开始答题时间',
+  submitted_at TIMESTAMP NULL COMMENT '提交时间（NULL=进行中）',
+  UNIQUE KEY uk_exam_user_attempt (exam_id, user_id, attempt_no),
+  INDEX idx_exam_user (exam_id, user_id),
+  INDEX idx_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='作答尝试（计时与次数控制）';
 
 -- 答题记录表（每次答题的总体结果）
 CREATE TABLE IF NOT EXISTS `exam_records` (
@@ -231,7 +259,7 @@ CREATE TABLE IF NOT EXISTS `teacher_subjects` (
 -- 班级表
 CREATE TABLE IF NOT EXISTS `classes` (
   id INT AUTO_INCREMENT PRIMARY KEY COMMENT '班级ID',
-  name VARCHAR(50) NOT NULL COMMENT '班级名称，如 1班、2班',
+  name VARCHAR(50) NOT NULL COMMENT '班级名称，格式：课程(科目)名+几班，如 数据结构1班、人工智能2班',
   grade VARCHAR(20) DEFAULT NULL COMMENT '年级（可选）',
   college VARCHAR(100) DEFAULT NULL COMMENT '所属学院',
   major VARCHAR(50) DEFAULT NULL COMMENT '所属专业',
@@ -279,3 +307,63 @@ SET @new_index_exists = (SELECT COUNT(*) FROM information_schema.STATISTICS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_classes' AND INDEX_NAME = 'uk_student_class');
 SET @sql = IF(@new_index_exists = 0, 'ALTER TABLE `student_classes` ADD UNIQUE KEY `uk_student_class` (`student_id`, `class_id`)', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ==================== exams 表扩展列迁移（安全探测 + 动态SQL） ====================
+SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exams' AND COLUMN_NAME = 'status');
+SET @sql = IF(@col = 0, "ALTER TABLE `exams` ADD COLUMN `status` ENUM('draft','published','closed') NOT NULL DEFAULT 'published' COMMENT '试卷状态'", 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exams' AND COLUMN_NAME = 'duration_minutes');
+SET @sql = IF(@col = 0, "ALTER TABLE `exams` ADD COLUMN `duration_minutes` INT DEFAULT NULL COMMENT '限时答题（分钟）'", 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exams' AND COLUMN_NAME = 'start_at');
+SET @sql = IF(@col = 0, "ALTER TABLE `exams` ADD COLUMN `start_at` DATETIME DEFAULT NULL COMMENT '允许开始答题时间'", 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exams' AND COLUMN_NAME = 'end_at');
+SET @sql = IF(@col = 0, "ALTER TABLE `exams` ADD COLUMN `end_at` DATETIME DEFAULT NULL COMMENT '截止答题时间'", 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exams' AND COLUMN_NAME = 'max_attempts');
+SET @sql = IF(@col = 0, "ALTER TABLE `exams` ADD COLUMN `max_attempts` INT DEFAULT NULL COMMENT '最大作答次数'", 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ==================== exam_questions 表快照列迁移 ====================
+SET @snap_cols = 'snapshot_章节,snapshot_题型,snapshot_序号,snapshot_题目,snapshot_选项,snapshot_答案,snapshot_解析,snapshot_难度,snapshot_知识点';
+SET @snap_defs = CONCAT_WS('||',
+  'snapshot_章节|INT DEFAULT NULL|快照：章节',
+  'snapshot_题型|INT DEFAULT NULL|快照：题型',
+  'snapshot_序号|INT DEFAULT NULL|快照：序号',
+  'snapshot_题目|TEXT|快照：题干',
+  'snapshot_选项|TEXT|快照：选项',
+  'snapshot_答案|VARCHAR(500)|快照：正确答案',
+  'snapshot_解析|TEXT|快照：解析',
+  'snapshot_难度|VARCHAR(10)|快照：难度',
+  'snapshot_知识点|VARCHAR(255)|快照：知识点'
+);
+-- 使用存储过程逐列安全添加（此处简化：在 seed.js 中逐列探测添加）
+
+-- ==================== exam_attempts 表不存在则创建 ====================
+CREATE TABLE IF NOT EXISTS `exam_attempts` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+  exam_id INT NOT NULL COMMENT '试卷ID exams.id',
+  user_id INT NOT NULL COMMENT '学生ID users.id',
+  attempt_no INT NOT NULL DEFAULT 1 COMMENT '第几次作答（从1开始递增）',
+  started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '开始答题时间',
+  submitted_at TIMESTAMP NULL COMMENT '提交时间（NULL=进行中）',
+  UNIQUE KEY uk_exam_user_attempt (exam_id, user_id, attempt_no),
+  INDEX idx_exam_user (exam_id, user_id),
+  INDEX idx_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='作答尝试（计时与次数控制）';
+
+-- ==================== exam_classes 多班级关联表（智能组卷多选目标班级） ====================
+CREATE TABLE IF NOT EXISTS `exam_classes` (
+  id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+  exam_id INT NOT NULL COMMENT '试卷ID exams.id',
+  class_id INT NOT NULL COMMENT '班级ID classes.id',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  UNIQUE KEY uk_exam_class (exam_id, class_id),
+  INDEX idx_exam (exam_id),
+  INDEX idx_class (class_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='试卷目标班级关联表（多选）';

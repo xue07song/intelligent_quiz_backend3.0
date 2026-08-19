@@ -3,6 +3,13 @@ const userModel = require('../models/userModel');
 const registrationModel = require('../models/registrationModel');
 const { sign } = require('../utils/jwt');
 
+const makeError = (message, statusCode, errorCode) => {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    error.errorCode = errorCode;
+    return error;
+};
+
 const login = async ({ username, password }) => {
     if (!username || !password) {
         const error = new Error('用户名和密码不能为空');

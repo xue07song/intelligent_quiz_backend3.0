@@ -3,7 +3,7 @@ const pool = require('../config/db');
 // ==================== 班级表 ====================
 
 // 班级列表（含每班学生人数）
-const findAll = async ({ keyword, ownerId } = {}) => {
+const findAll = async ({ keyword, subjects, ownerId } = {}) => {
     let where = '';
     const params = [];
     const conditions = [];
@@ -11,6 +11,12 @@ const findAll = async ({ keyword, ownerId } = {}) => {
         conditions.push('(c.name LIKE ? OR c.grade LIKE ? OR c.remark LIKE ?)');
         const kw = `%${keyword.trim()}%`;
         params.push(kw, kw, kw);
+    }
+    // 教师端按所教科目过滤班级：班级名需匹配「科目+数字+班」形式
+    if (Array.isArray(subjects) && subjects.length > 0) {
+        const escaped = subjects.map((s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+        conditions.push(`c.name REGEXP CONCAT('^(', ?, ')[0-9]+班$')`);
+        params.push(escaped.join('|'));
     }
     // ownerId 暂时不用于过滤（classes 表无 owner_id 列），保留参数兼容
     if (conditions.length) where = `WHERE ${conditions.join(' AND ')}`;

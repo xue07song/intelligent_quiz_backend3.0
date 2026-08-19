@@ -1,7 +1,7 @@
 const pool = require('../config/db');
 
 const QT_TABLE = '`题库1`';
-const OBJECTIVE_TYPES = [1, 2, 3, 4, 5, 6];
+
 // 支持所有题型：判断 单选 多选 填空 简答 程序
 const ALL_TYPES = [1, 2, 3, 4, 5, 6];
 
@@ -26,7 +26,7 @@ const ensureTables = async () => {
         user_id INT NOT NULL,
         chapters VARCHAR(100) DEFAULT NULL,
         knowledge_keyword VARCHAR(200) DEFAULT NULL,
-        question_types VARCHAR(50) NOT NULL DEFAULT '1,2,3,4',
+        question_types VARCHAR(50) NOT NULL DEFAULT '1,2,3,4,5,6',
         planned_count INT NOT NULL DEFAULT 10,
         initial_difficulty TINYINT NOT NULL DEFAULT 1,
         current_difficulty TINYINT NOT NULL DEFAULT 1,
@@ -91,7 +91,7 @@ const getInventory = async (options) => {
     return rows;
 };
 
-const getChapterInventory = async ({ chapters = [], questionTypes = OBJECTIVE_TYPES } = {}) => {
+const getChapterInventory = async ({ chapters = [], questionTypes = ALL_TYPES } = {}) => {
     const f = filters({ chapters, questionTypes });
     const [rows] = await pool.query(
         `SELECT q.章节 chapter, ${normalizeDifficultySql} difficulty, q.题型 questionType, COUNT(*) total
@@ -100,16 +100,17 @@ const getChapterInventory = async ({ chapters = [], questionTypes = OBJECTIVE_TY
     return rows;
 };
 
-const getOverview = async (examIds = null) => {
+const getOverview = async (subjects = null) => {
     await ensureTables();
-    const examIdsArray = Array.isArray(examIds) && examIds.length > 0 ? examIds : null;
-    if (Array.isArray(examIds) && examIds.length === 0) {
-        return { users: [], recentSessions: [] };
+    const hasSubjects = Array.isArray(subjects) && subjects.length > 0;
+    if (Array.isArray(subjects) && subjects.length === 0) {
+        return { users: [], recentSessions: [], classes: [] };
     }
-    const examScopeClause = examIdsArray
-        ? ` AND u.id IN (SELECT user_id FROM exam_records WHERE exam_id IN (${examIdsArray.map(() => '?').join(', ')}))`
+    const classMatch = hasSubjects
+        ? ` AND c.name REGEXP CONCAT('^(', ?, ')[0-9]+班$')`
         : '';
-    const examParams = examIdsArray || [];
+    const classParams = hasSubjects ? [subjects.map((s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')] : [];
+
     const [users] = await pool.query(
         `SELECT u.id userId, u.username, u.nickname, c.id classId, COALESCE(c.name, '未分班') className,
           COUNT(CASE WHEN s.answered_count > 0 THEN s.id END) sessionCount,
@@ -120,16 +121,25 @@ const getOverview = async (examIds = null) => {
           MAX(CASE WHEN s.answered_count > 0 THEN s.updated_at END) lastPracticeAt
          FROM users u LEFT JOIN adaptive_practice_sessions s ON s.user_id=u.id
          LEFT JOIN classes c ON c.id=u.class_id
-         WHERE u.role='student' GROUP BY u.id, u.username, u.nickname, c.id, c.name ORDER BY className, lastPracticeAt DESC, u.id`
+         WHERE u.role='student' ${classMatch}
+         GROUP BY u.id, u.username, u.nickname, c.id, c.name
+         ORDER BY className, lastPracticeAt DESC, u.id`,
+        classParams
     );
     const [sessions] = await pool.query(
         `SELECT s.*, u.username, u.nickname, c.id classId, COALESCE(c.name, '未分班') className
          FROM adaptive_practice_sessions s INNER JOIN users u ON u.id=s.user_id
          LEFT JOIN classes c ON c.id=u.class_id
-         WHERE s.answered_count > 0 ORDER BY s.updated_at DESC LIMIT 100`
+         WHERE s.answered_count > 0 ${classMatch} ORDER BY s.updated_at DESC LIMIT 100`,
+        classParams
     );
-    const [classes] = await pool.query(`SELECT c.id,c.name,COUNT(DISTINCT sc.student_id) studentCount
-        FROM classes c LEFT JOIN student_classes sc ON sc.class_id=c.id GROUP BY c.id,c.name ORDER BY c.name`);
+    const [classes] = await pool.query(
+        `SELECT c.id, c.name, COUNT(DISTINCT sc.student_id) studentCount
+         FROM classes c LEFT JOIN student_classes sc ON sc.class_id=c.id
+         ${hasSubjects ? 'WHERE ' + classMatch.slice(5) : ''}
+         GROUP BY c.id, c.name ORDER BY c.name`,
+        classParams
+    );
     return { users, recentSessions: sessions, classes };
 };
 
@@ -342,7 +352,7 @@ const listReviewAnswers = async ({ status = 'pending', page = 1, pageSize = 20 }
 };
 
 module.exports = {
-    OBJECTIVE_TYPES, ALL_TYPES, ensureTables, getInventory, getChapterInventory,
+    ALL_TYPES, ensureTables, getInventory, getChapterInventory,
     getOverview, getStudentProgress, createSession, findSession, findAnswers,
     findNextQuestion, findEligibleQuestionById, saveAnswerAndState,
     findAdaptiveAnswerById, reviewAdaptiveAnswer, listReviewAnswers,

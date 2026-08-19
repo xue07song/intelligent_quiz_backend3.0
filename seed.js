@@ -8,13 +8,28 @@ const PWD = bcrypt.hashSync('123456', 10);
 const run = async () => {
     const conn = await pool.getConnection();
     try {
-        // ===== 1. 迁移：安全加列 =====
+        // ===== 1. 迁移：安全加列 / 建表 =====
         const hasCol = async (table, col) => {
             const [rows] = await conn.query(
                 `SELECT COUNT(*) AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
                 [table, col]
             );
             return rows[0].c > 0;
+        };
+        const hasTable = async (table) => {
+            const [rows] = await conn.query(
+                `SELECT COUNT(*) AS c FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+                [table]
+            );
+            return rows[0].c > 0;
+        };
+        const addColIfMissing = async (table, col, definition) => {
+            if (!(await hasCol(table, col))) {
+                await conn.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${col}\` ${definition}`);
+                console.log(`✅ ${table}.${col} 列已添加`);
+                return true;
+            }
+            return false;
         };
 
         if (!(await hasCol('classes', 'type'))) {
@@ -28,6 +43,63 @@ const run = async () => {
         if (!(await hasCol('student_classes', 'type'))) {
             await conn.query(`ALTER TABLE \`student_classes\` ADD COLUMN \`type\` ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '关系类型'`);
             console.log('✅ student_classes.type 列已添加');
+        }
+
+        // ====== exams 表扩展列 ======
+        await addColIfMissing('exams', 'status', "ENUM('draft','published','closed') NOT NULL DEFAULT 'published' COMMENT '试卷状态'");
+        await addColIfMissing('exams', 'duration_minutes', 'INT DEFAULT NULL COMMENT \'限时答题（分钟）\'');
+        await addColIfMissing('exams', 'start_at', 'DATETIME DEFAULT NULL COMMENT \'允许开始答题时间\'');
+        await addColIfMissing('exams', 'end_at', 'DATETIME DEFAULT NULL COMMENT \'截止答题时间\'');
+        await addColIfMissing('exams', 'max_attempts', 'INT DEFAULT NULL COMMENT \'最大作答次数\'');
+
+        // ====== exam_questions 表快照列 ======
+        const snapCols = [
+            ['snapshot_章节', 'INT DEFAULT NULL'],
+            ['snapshot_题型', 'INT DEFAULT NULL'],
+            ['snapshot_序号', 'INT DEFAULT NULL'],
+            ['snapshot_题目', 'TEXT'],
+            ['snapshot_选项', 'TEXT'],
+            ['snapshot_答案', 'VARCHAR(500)'],
+            ['snapshot_解析', 'TEXT'],
+            ['snapshot_难度', 'VARCHAR(10)'],
+            ['snapshot_知识点', 'VARCHAR(255)'],
+        ];
+        for (const [col, def] of snapCols) {
+            await addColIfMissing('exam_questions', col, def);
+        }
+
+        // ====== exam_attempts 表 ======
+        if (!(await hasTable('exam_attempts'))) {
+            await conn.query(`
+                CREATE TABLE \`exam_attempts\` (
+                  id INT AUTO_INCREMENT PRIMARY KEY,
+                  exam_id INT NOT NULL,
+                  user_id INT NOT NULL,
+                  attempt_no INT NOT NULL DEFAULT 1,
+                  started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  submitted_at TIMESTAMP NULL,
+                  UNIQUE KEY uk_exam_user_attempt (exam_id, user_id, attempt_no),
+                  INDEX idx_exam_user (exam_id, user_id),
+                  INDEX idx_user (user_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            console.log('✅ exam_attempts 表已创建');
+        }
+
+        // ====== exam_classes 表（智能组卷多选目标班级）======
+        if (!(await hasTable('exam_classes'))) {
+            await conn.query(`
+                CREATE TABLE \`exam_classes\` (
+                  id INT AUTO_INCREMENT PRIMARY KEY,
+                  exam_id INT NOT NULL,
+                  class_id INT NOT NULL,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE KEY uk_exam_class (exam_id, class_id),
+                  INDEX idx_exam (exam_id),
+                  INDEX idx_class (class_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+            console.log('✅ exam_classes 表已创建');
         }
 
         // 索引迁移
@@ -46,13 +118,13 @@ const run = async () => {
             console.log('✅ uk_student_class 复合唯一键已添加');
         }
 
-        // ===== 2. 插入班级 =====
+        // ===== 2. 插入班级 =====（格式：科目/课程名 + 几班）
         const classes = [
-            ['计算机科学与技术1班', '2023级', '计算机学院', '计算机科学与技术', 'compulsory', '2023级计科1班'],
-            ['计算机科学与技术2班', '2023级', '计算机学院', '计算机科学与技术', 'compulsory', '2023级计科2班'],
-            ['软件工程1班', '2023级', '计算机学院', '软件工程', 'compulsory', '2023级软工1班'],
-            ['人工智能实验班', '2023级', '计算机学院', '人工智能', 'elective', '选修：AI方向拔尖班'],
-            ['数据科学交叉班', '2023级', '计算机学院', '数据科学与大数据技术', 'elective', '选修：跨学科交叉'],
+            ['人工智能1班', '2023级', '计算机学院', '人工智能', 'compulsory', '2023级人工智能1班（必修）'],
+            ['人工智能2班', '2023级', '计算机学院', '人工智能', 'compulsory', '2023级人工智能2班（必修）'],
+            ['数据结构1班', '2023级', '计算机学院', '计算机科学与技术', 'compulsory', '2023级数据结构1班（必修）'],
+            ['机器学习实验班', '2023级', '计算机学院', '人工智能', 'elective', '选修：机器学习方向拔尖班'],
+            ['操作系统交叉班', '2023级', '计算机学院', '软件工程', 'elective', '选修：操作系统跨学科交叉'],
         ];
         for (const [name, grade, college, major, type, remark] of classes) {
             await conn.query(
@@ -146,44 +218,44 @@ const run = async () => {
         };
 
         // 必修班
-        const jike1Class = await getClassId('计算机科学与技术1班');
-        const jike2Class = await getClassId('计算机科学与技术2班');
-        const ruangong1Class = await getClassId('软件工程1班');
-        const aiElective = await getClassId('人工智能实验班');
-        const dataElective = await getClassId('数据科学交叉班');
+        const ai1Class = await getClassId('人工智能1班');
+        const ai2Class = await getClassId('人工智能2班');
+        const ds1Class = await getClassId('数据结构1班');
+        const mlElective = await getClassId('机器学习实验班');
+        const osElective = await getClassId('操作系统交叉班');
 
-        // 计科1班（必修）：前8名计科学生
-        const jike1Students = ['student_lizihao','student_wangyihan','student_zhangxinyu','student_chenyifei','student_liuyifei','student_zhouziyang','student_wujiaqi','student_zhengshuyi'];
-        // 计科2班（必修）：后4名计科学生
-        const jike2Students = ['student_shenmengyao','student_hanyifei','student_yangzixuan','student_zhuyunqing'];
-        // 软工1班（必修）：8名软工学生
-        const ruangongStudents = ['student_sunhaochen','student_zhaoyutong','student_qianzilin','student_fengyuxuan','student_chengyiming','student_chuyuxin','student_weijunkai','student_jiangruohan'];
+        // 人工智能1班（必修）：前6名计科学生
+        const ai1Students = ['student_lizihao','student_wangyihan','student_zhangxinyu','student_chenyifei','student_liuyifei','student_zhouziyang'];
+        // 人工智能2班（必修）：后6名计科学生
+        const ai2Students = ['student_wujiaqi','student_zhengshuyi','student_shenmengyao','student_hanyifei','student_yangzixuan','student_zhuyunqing'];
+        // 数据结构1班（必修）：8名软工学生
+        const dsStudents = ['student_sunhaochen','student_zhaoyutong','student_qianzilin','student_fengyuxuan','student_chengyiming','student_chuyuxin','student_weijunkai','student_jiangruohan'];
 
-        for (const username of jike1Students) {
+        for (const username of ai1Students) {
             const sid = await getUserId(username);
-            if (sid && jike1Class) await conn.query('INSERT IGNORE INTO student_classes (student_id, class_id, type) VALUES (?, ?, ?)', [sid, jike1Class, 'compulsory']);
+            if (sid && ai1Class) await conn.query('INSERT IGNORE INTO student_classes (student_id, class_id, type) VALUES (?, ?, ?)', [sid, ai1Class, 'compulsory']);
         }
-        for (const username of jike2Students) {
+        for (const username of ai2Students) {
             const sid = await getUserId(username);
-            if (sid && jike2Class) await conn.query('INSERT IGNORE INTO student_classes (student_id, class_id, type) VALUES (?, ?, ?)', [sid, jike2Class, 'compulsory']);
+            if (sid && ai2Class) await conn.query('INSERT IGNORE INTO student_classes (student_id, class_id, type) VALUES (?, ?, ?)', [sid, ai2Class, 'compulsory']);
         }
-        for (const username of ruangongStudents) {
+        for (const username of dsStudents) {
             const sid = await getUserId(username);
-            if (sid && ruangong1Class) await conn.query('INSERT IGNORE INTO student_classes (student_id, class_id, type) VALUES (?, ?, ?)', [sid, ruangong1Class, 'compulsory']);
+            if (sid && ds1Class) await conn.query('INSERT IGNORE INTO student_classes (student_id, class_id, type) VALUES (?, ?, ?)', [sid, ds1Class, 'compulsory']);
         }
         console.log('✅ 必修班关联已建立');
 
-        // 选修班：AI实验班（部分计科学生）
-        const aiStudents = ['student_lizihao','student_zhangxinyu','student_zhouziyang','student_shenmengyao','student_yangzixuan'];
-        for (const username of aiStudents) {
+        // 选修班：机器学习实验班（部分AI班学生）
+        const mlStudents = ['student_lizihao','student_zhangxinyu','student_zhouziyang','student_shenmengyao','student_yangzixuan'];
+        for (const username of mlStudents) {
             const sid = await getUserId(username);
-            if (sid && aiElective) await conn.query('INSERT IGNORE INTO student_classes (student_id, class_id, type) VALUES (?, ?, ?)', [sid, aiElective, 'elective']);
+            if (sid && mlElective) await conn.query('INSERT IGNORE INTO student_classes (student_id, class_id, type) VALUES (?, ?, ?)', [sid, mlElective, 'elective']);
         }
-        // 选修班：数据科学交叉班（部分软工学生）
-        const dataStudents = ['student_sunhaochen','student_qianzilin','student_chengyiming','student_chuyuxin','student_jiangruohan'];
-        for (const username of dataStudents) {
+        // 选修班：操作系统交叉班（部分数据结构班学生）
+        const osStudents = ['student_sunhaochen','student_qianzilin','student_chengyiming','student_chuyuxin','student_jiangruohan'];
+        for (const username of osStudents) {
             const sid = await getUserId(username);
-            if (sid && dataElective) await conn.query('INSERT IGNORE INTO student_classes (student_id, class_id, type) VALUES (?, ?, ?)', [sid, dataElective, 'elective']);
+            if (sid && osElective) await conn.query('INSERT IGNORE INTO student_classes (student_id, class_id, type) VALUES (?, ?, ?)', [sid, osElective, 'elective']);
         }
         console.log('✅ 选修班关联已建立');
 

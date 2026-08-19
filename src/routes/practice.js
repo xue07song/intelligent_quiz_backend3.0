@@ -83,6 +83,8 @@ router.get('/admin/users', requireRoles('admin', 'teacher'), practiceController.
 router.get('/admin/records', requireRoles('admin', 'teacher'), practiceController.adminListRecords);
 router.get('/admin/records/:id', requireRoles('admin', 'teacher'), practiceController.adminGetRecord);
 router.put('/admin/answers/:answerId/review', requireRoles('teacher'), practiceController.reviewSubjectiveAnswer);
+router.get('/admin/adaptive-answers', requireRoles('admin', 'teacher'), practiceController.listAdaptiveReview);
+router.put('/admin/adaptive-answers/:answerId/review', requireRoles('admin', 'teacher'), practiceController.reviewAdaptiveAnswer);
 router.get('/admin/users/:userId/records', requireRoles('admin', 'teacher'), practiceController.adminListUserRecords);
 router.get('/admin/users/:userId/statistics', requireRoles('admin', 'teacher'), practiceController.adminGetUserStats);
 router.get('/admin/stats/all', requireRoles('admin', 'teacher'), practiceController.adminGetAllStats);

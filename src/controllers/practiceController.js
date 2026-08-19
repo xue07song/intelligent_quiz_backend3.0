@@ -170,7 +170,7 @@ const adminListRecords = async (req, res, next) => {
         const page = parseInt(req.query.page) || 1;
         const pageSize = parseInt(req.query.pageSize) || 20;
         const role = req.query.role;
-        const result = await practiceService.adminListRecords(req.user.role, { role, page, pageSize });
+        const result = await practiceService.adminListRecords(req.user.role, req.user.id, { role, page, pageSize });
         res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) {
         next(err);
@@ -222,6 +222,22 @@ const reviewSubjectiveAnswer = async (req, res, next) => {
             return next(Object.assign(new Error('管理员无权复核主观题答案'), { statusCode: 403 }));
         }
         res.json(success(await practiceService.reviewSubjectiveAnswer(req.user.id, req.params.answerId, req.body), '复核结果已保存'));
+    } catch (err) { next(err); }
+};
+
+const listAdaptiveReview = async (req, res, next) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const pageSize = parseInt(req.query.pageSize) || 20;
+        const status = req.query.status || 'pending';
+        const result = await practiceService.listAdaptiveReview({ status, page, pageSize });
+        res.json(paginated(result.rows, result.total, page, pageSize));
+    } catch (err) { next(err); }
+};
+
+const reviewAdaptiveAnswer = async (req, res, next) => {
+    try {
+        res.json(success(await practiceService.reviewAdaptiveAnswer(req.user.id, req.params.answerId, req.body), '复核结果已保存'));
     } catch (err) { next(err); }
 };
 
@@ -285,6 +301,44 @@ const exportExam = async (req, res, next) => {
     }
 };
 
+// 学生开始作答（服务端记录开始时间）
+const startExam = async (req, res, next) => {
+    try {
+        const result = await practiceService.startExam(req.user.id, req.params.id);
+        res.json(success(result, '开始作答'));
+    } catch (err) {
+        next(err);
+    }
+};
+
+// 试卷生命周期管理
+const updateExamStatus = async (req, res, next) => {
+    try {
+        await practiceService.updateExamStatus(req.user, req.params.id, req.body.status);
+        res.json(success(null, '试卷状态已更新'));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const updateExam = async (req, res, next) => {
+    try {
+        await practiceService.updateExamSettings(req.user, req.params.id, req.body);
+        res.json(success(null, '试卷已更新'));
+    } catch (err) {
+        next(err);
+    }
+};
+
+const removeExam = async (req, res, next) => {
+    try {
+        await practiceService.deleteExam(req.user, req.params.id);
+        res.json(success(null, '试卷已删除'));
+    } catch (err) {
+        next(err);
+    }
+};
+
 module.exports = {
     generate,
     inventory,
@@ -309,7 +363,13 @@ module.exports = {
     adminGetRecord,
     adminGetAllStats,
     reviewSubjectiveAnswer,
+    listAdaptiveReview,
+    reviewAdaptiveAnswer,
     examAnalytics,
     questionDetail,
     exportExam,
+    startExam,
+    updateExamStatus,
+    updateExam,
+    removeExam,
 };

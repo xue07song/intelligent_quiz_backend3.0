@@ -12,9 +12,14 @@ const assertClassOwner = (cls, actor) => {
     if (!actor) throw makeError('无权操作班级', 403, 40301);
 };
 
-// 班级列表
+// 班级列表（教师仅返回本人所教科目的班级，管理员返回全部）
 const listClasses = async ({ keyword } = {}, actor) => {
-    return classModel.findAll({ keyword });
+    let subjects = null;
+    if (actor && actor.role === 'teacher') {
+        const userModel = require('../models/userModel');
+        subjects = await userModel.getTeacherSubjects(actor.id);
+    }
+    return classModel.findAll({ keyword, subjects });
 };
 
 // 班级详情（含学生列表分页）

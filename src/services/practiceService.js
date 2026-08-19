@@ -56,7 +56,7 @@ const resolveExamSubject = async (subject, teacherSubjects) => {
 // 随机组卷
 const generateExam = async (userId, options, actor) => {
     const {
-        章节, 题型, 难度, count = 10, title, subject, classId,
+        章节, 题型, 难度, count = 10, title, subject, classId, classIds,
         status, durationMinutes, startAt, endAt, maxAttempts,
     } = options;
     const numCount = Number(count) || 10;
@@ -77,7 +77,7 @@ const generateExam = async (userId, options, actor) => {
     // 生成试卷标题
     const examTitle = title || `练习试卷-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
 
-    const { examId, objectiveCount } = await practiceModel.createExam({
+    const { examId, objectiveCount, classIds: savedClassIds } = await practiceModel.createExam({
         userId,
         title: examTitle,
         chapter: 章节,
@@ -86,6 +86,7 @@ const generateExam = async (userId, options, actor) => {
         questions,
         subject: finalSubject,
         classId: classId || null,
+        classIds: Array.isArray(classIds) ? classIds : null,
         status,
         durationMinutes,
         startAt,
@@ -93,7 +94,7 @@ const generateExam = async (userId, options, actor) => {
         maxAttempts,
     });
 
-    return { examId, title: examTitle, total: questions.length, objectiveCount, questions };
+    return { examId, title: examTitle, total: questions.length, objectiveCount, questions, classIds: savedClassIds };
 };
 
 const getExamInventory = async ({ chapters = [], subject } = {}, actor) => {
@@ -154,7 +155,7 @@ const generateRuleExam = async (userId, options = {}, actor) => {
     const {
         title, chapters = [], count = 20,
         typeDistribution, difficultyDistribution, minKnowledgePoints = 1,
-        subject, classId, status, durationMinutes, startAt, endAt, maxAttempts,
+        subject, classId, classIds, status, durationMinutes, startAt, endAt, maxAttempts,
     } = options;
     const numCount = Number(count);
     if (!Number.isInteger(numCount) || numCount < 1 || numCount > 100) {
@@ -183,7 +184,7 @@ const generateRuleExam = async (userId, options = {}, actor) => {
         minKnowledgePoints: pointCount,
     });
     const examTitle = String(title || '').trim() || `智能组卷-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
-    const { examId, objectiveCount } = await practiceModel.createExam({
+    const { examId, objectiveCount, classIds: savedClassIds } = await practiceModel.createExam({
         userId,
         title: examTitle,
         chapter: Array.isArray(chapters) && chapters.length ? chapters.join(',') : null,
@@ -192,23 +193,34 @@ const generateRuleExam = async (userId, options = {}, actor) => {
         questions,
         subject: finalSubject,
         classId: classId || null,
+        classIds: Array.isArray(classIds) ? classIds : null,
         status,
         durationMinutes,
         startAt,
         endAt,
         maxAttempts,
     });
-    return { examId, title: examTitle, total: questions.length, objectiveCount, report, questions };
+    return { examId, title: examTitle, total: questions.length, objectiveCount, report, questions, classIds: savedClassIds };
 };
 
 // 获取试卷列表
 const getExams = async (userId, userRole, options) => {
-    // 学生：注入其所属的全部班级（必修+选修）用于过滤可见试卷
+    // 学生：注入其所属的全部班级（必修+选修）及所学课程科目，用于过滤可见试卷
     if (userRole === 'student') {
         const classModel = require('../models/classModel');
         const allClasses = await classModel.findAllClassesByStudent(userId);
         const classIds = allClasses.map(c => c.class_id);
-        options = { ...options, classIds: classIds.length ? classIds : null };
+        // 从班级名（科目+数字+班）解析学生所学科目
+        const subjectSet = new Set();
+        for (const c of allClasses) {
+            const m = String(c.class_name || '').match(/^(.+?)\d+班$/);
+            if (m) subjectSet.add(m[1].trim());
+        }
+        options = {
+            ...options,
+            classIds: classIds.length ? classIds : null,
+            studentSubjects: subjectSet.size ? Array.from(subjectSet) : null,
+        };
     }
     return practiceModel.findExamsByScope(userId, userRole, options);
 };
@@ -223,19 +235,22 @@ const getExam = async (examId, userId, userRole = 'student') => {
     if (userRole === 'teacher' && exam.user_id !== userId) {
         throw makeError('无权查看此试卷', 403, 40301);
     }
-    // 学生：只能看教师出的、且对本人班级开放（class_id 为 null 表示全班级开放）的卷子
+    // 学生：只能看教师出的、且对本人班级开放（或全开放）的卷子
     if (userRole === 'student' && exam.creator_role === 'teacher') {
         if (exam.status && exam.status !== 'published') {
             throw makeError('试卷未发布或已关闭，无法查看', 403, 40301);
         }
-        if (exam.class_id) {
-            const classModel = require('../models/classModel');
-            // 多对多模式：学生可能在必修班或选修班中，只要在任意班级即可
-            const allClasses = await classModel.findAllClassesByStudent(userId);
-            const inClass = allClasses.some(c => c.class_id === exam.class_id);
-            if (!inClass) {
-                throw makeError('无权查看此试卷：不在您所在班级范围内', 403, 40301);
-            }
+        // 多选班级：用新的辅助函数（兼容冗余 class_id + exam_classes 表）
+        const classModel = require('../models/classModel');
+        const allClasses = await classModel.findAllClassesByStudent(userId);
+        const classIdsFromStudent = allClasses.map(c => c.class_id);
+        const studentSubjects = [...new Set(allClasses.map(c => {
+            const m = String(c.class_name || '').match(/^(.+?)\d+班$/);
+            return m ? m[1].trim() : null;
+        }).filter(Boolean))];
+        const visible = await practiceModel.isExamVisibleToStudentClasses(examId, classIdsFromStudent, studentSubjects);
+        if (!visible) {
+            throw makeError('无权查看此试卷：不在您所学课程范围内', 403, 40301);
         }
     }
     // 学生看自己组卷的卷子（user_id===userId）允许
@@ -316,13 +331,13 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
             throw makeError('答题时间已到，无法提交', 403, 40301);
         }
     }
-    // 班级可见性校验
-    if (exam.class_id) {
+    // 班级可见性校验：多选班级 + 全开放
+    if (exam.creator_role === 'teacher') {
         const classModel = require('../models/classModel');
-        // 多对多模式：学生可能在必修班或选修班中
         const allClasses = await classModel.findAllClassesByStudent(userId);
-        const inClass = allClasses.some(c => c.class_id === exam.class_id);
-        if (!inClass) {
+        const classIdsFromStudent = allClasses.map(c => c.class_id);
+        const visible = await practiceModel.isExamVisibleToStudentClasses(examId, classIdsFromStudent);
+        if (!visible) {
             throw makeError('无权提交此试卷：不在您所在班级范围内', 403, 40301);
         }
     }
@@ -411,14 +426,14 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
         });
     }
 
-    // ================== [MODIFIED] 准确率计算改为：正确数 / 总题数 ==================
-    const totalQuestions = exam.questions.length;
-    const accuracy = totalQuestions > 0
-        ? Math.round((correctCount / totalQuestions) * 10000) / 100
+    // ================== 准确率计算：客观卷按已答数，含主观题卷按总题数 ==================
+    const isAllObjective = exam.questions.every((q) => OBJECTIVE_TYPES.includes(Number(q.题型)));
+    const effectiveTotal = isAllObjective ? answeredCount : exam.questions.length;
+    const accuracy = effectiveTotal > 0
+        ? Math.round((correctCount / effectiveTotal) * 10000) / 100
         : 0;
+    const score = accuracy;
     // ============================================================================
-
-    const score = accuracy; // 百分制
 
     const recordId = await practiceModel.createRecord({
         examId,
@@ -434,6 +449,7 @@ const submitExam = async (userId, userRole, examId, { answers, startedAt }) => {
         objectiveCorrect,
         accuracy,
         score,
+        attemptNo: attempt ? attempt.attempt_no : null,
         answers: answerRecords,
     });
 
@@ -540,7 +556,7 @@ const getExamDraft = async (userId, examId) => {
         if (e.statusCode === 403 || e.statusCode === 404) throw e;
     }
     const draft = await practiceModel.findDraft(userId, examId);
-    return draft || { exam_id: examId, user_id: userId, answers: {}, duration_seconds: 0, updated_at: null };
+    return draft || { exam_id: examId, user_id: userId, answers: {}, updated_at: null };
 };
 
 const saveExamDraft = async (userId, examId, body = {}) => {
@@ -551,8 +567,7 @@ const saveExamDraft = async (userId, examId, body = {}) => {
     if (answers && typeof answers !== 'object') {
         throw makeError('answers 必须为对象形式 { questionId: userAnswer }', 400, 40001);
     }
-    const durationSeconds = Math.max(0, Number(body.durationSeconds) || 0);
-    return practiceModel.saveDraft(userId, examId, { answers, durationSeconds });
+    return practiceModel.saveDraft(userId, examId, { answers });
 };
 
 // 错题本：分页列表
@@ -710,7 +725,8 @@ const adminListUsers = async (callerRole, callerId, { role } = {}) => {
 };
 
 // 管理端：查询指定用户的答题记录列表
-const adminListUserRecords = async (callerRole, targetUserId, { page, pageSize } = {}) => {
+const adminListUserRecords = async (callerRole, callerId, targetUserId, { page, pageSize } = {}) => {
+    let examIds = null;
     if (callerRole === 'teacher') {
         const targetUser = await practiceModel.findUserById(targetUserId);
         if (!targetUser || targetUser.role !== 'student') {
@@ -836,8 +852,20 @@ const updateExamSettings = async (actor, examId, data = {}) => {
     if (data.startAt !== undefined) allowed.startAt = data.startAt || null;
     if (data.endAt !== undefined) allowed.endAt = data.endAt || null;
     if (data.maxAttempts !== undefined) allowed.maxAttempts = data.maxAttempts ? Number(data.maxAttempts) : null;
-    if (data.classId !== undefined) allowed.classId = data.classId ? Number(data.classId) : null;
+    // 兼容：传了 classIds 数组优先，否则用单个 classId
+    let classIdsToSave = null;
+    if (Array.isArray(data.classIds)) {
+        classIdsToSave = data.classIds.map(x => Number(x)).filter(x => Number.isInteger(x) && x > 0);
+    } else if (data.classId !== undefined) {
+        const legacy = data.classId ? Number(data.classId) : null;
+        classIdsToSave = legacy ? [legacy] : [];
+        allowed.classId = legacy;
+    }
     await practiceModel.updateExam(examId, allowed);
+    // 多选班级：同步 exam_classes 表
+    if (classIdsToSave !== null) {
+        await practiceModel.replaceExamClasses(examId, classIdsToSave);
+    }
     return practiceModel.findExamById(examId);
 };
 
@@ -867,7 +895,7 @@ const deleteExam = async (actor, examId) => {
 };
 
 // 管理端：以人为界的全局统计总览
-const adminGetAllStatsByUser = async (callerRole, { role } = {}) => {
+const adminGetAllStatsByUser = async (callerRole, callerId, { role } = {}) => {
     const finalRole = resolveRoleFilter(callerRole, role);
     let examIds = null;
     if (callerRole === 'teacher') {

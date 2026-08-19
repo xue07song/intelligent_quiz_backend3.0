@@ -81,11 +81,115 @@ const countObjective = (questions) => {
     return questions.filter((q) => OBJECTIVE_TYPES.includes(Number(q.题型))).length;
 };
 
-// 创建试卷（事务：写 exams + exam_questions）
+// ====== exam_classes 关联表：试卷多班级 ======
+const findExamClassIds = async (examId) => {
+    const [rows] = await pool.query('SELECT class_id FROM exam_classes WHERE exam_id = ?', [examId]);
+    return rows.map(r => r.class_id);
+};
+
+const addExamClasses = async (conn, examId, classIds) => {
+    const ids = Array.isArray(classIds)
+        ? classIds.map(Number).filter(id => Number.isInteger(id) && id > 0)
+        : (classIds ? [Number(classIds)] : []);
+    if (ids.length === 0) return 0;
+    const values = ids.map(cid => [examId, cid]);
+    const [result] = await conn.query(
+        'INSERT IGNORE INTO exam_classes (exam_id, class_id) VALUES ?',
+        [values]
+    );
+    return result.affectedRows;
+};
+
+const replaceExamClasses = async (examId, classIds) => {
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+        await conn.query('DELETE FROM exam_classes WHERE exam_id = ?', [examId]);
+        const added = await addExamClasses(conn, examId, classIds);
+        // 同步冗余列 class_id = 第一个班级（兼容旧代码）
+        const ids = Array.isArray(classIds)
+            ? classIds.map(Number).filter(id => Number.isInteger(id) && id > 0)
+            : (classIds ? [Number(classIds)] : []);
+        const legacyClassId = ids[0] || null;
+        await conn.query('UPDATE exams SET class_id = ? WHERE id = ?', [legacyClassId, examId]);
+        await conn.commit();
+        return { added, legacyClassId };
+    } catch (err) {
+        await conn.rollback();
+        throw err;
+    } finally {
+        conn.release();
+    }
+};
+
+// 判卷：用户是否在试卷指定的任一目标班级内（多选班级 + 冗余 class_id 兼容）
+// classIdsFromStudent: 该学生所属的所有班级ID（必修+选修）
+// studentSubjects: 学生所学课程科目（从班级名解析）
+// 返回 true = 对该学生可见
+const isExamVisibleToStudentClasses = async (examId, classIdsFromStudent, studentSubjects = []) => {
+    const studentIds = Array.isArray(classIdsFromStudent) && classIdsFromStudent.length > 0
+        ? classIdsFromStudent.map(Number)
+        : [];
+    const subjects = Array.isArray(studentSubjects) && studentSubjects.length > 0
+        ? studentSubjects.map(String)
+        : [];
+    if (studentIds.length === 0) {
+        // 学生不在任何班级：只能看 class_id IS NULL 且 exam_classes 为空的全开放卷
+        const [rows] = await pool.query(
+            `SELECT e.class_id,
+                    (SELECT COUNT(*) FROM exam_classes ec WHERE ec.exam_id = e.id) AS ec_count
+             FROM exams e WHERE e.id = ?`,
+            [examId]
+        );
+        const r = rows[0];
+        return r && r.class_id === null && Number(r.ec_count) === 0;
+    }
+    const placeholders = studentIds.map(() => '?').join(', ');
+    const subjectPlaceholders = subjects.length > 0 ? subjects.map(() => '?').join(', ') : '';
+    const openSubjectFilter = subjects.length > 0
+        ? `AND (e.subject IS NULL OR e.subject IN (${subjectPlaceholders}))`
+        : '';
+    const directedSubjectFilter = subjects.length > 0
+        ? `AND e.subject IN (${subjectPlaceholders})`
+        : '';
+    const params = [];
+    if (subjects.length > 0) params.push(...subjects);
+    params.push(...studentIds);
+    if (subjects.length > 0) params.push(...subjects);
+    params.push(...studentIds);
+    if (subjects.length > 0) params.push(...subjects);
+    params.push(examId);
+    const [rows] = await pool.query(
+        `SELECT
+           (e.class_id IS NULL AND
+              (SELECT COUNT(*) FROM exam_classes ec WHERE ec.exam_id = e.id) = 0
+              ${openSubjectFilter}
+           ) AS is_open_all,
+           (e.class_id IN (${placeholders}) ${directedSubjectFilter}) AS match_legacy,
+           EXISTS(SELECT 1 FROM exam_classes ec
+                  WHERE ec.exam_id = e.id AND ec.class_id IN (${placeholders})
+                  ${directedSubjectFilter}
+           ) AS match_ec
+         FROM exams e WHERE e.id = ?`,
+        params
+    );
+    const r = rows[0];
+    if (!r) return false;
+    return Boolean(r.is_open_all) || Boolean(r.match_legacy) || Boolean(r.match_ec);
+};
+
+// 创建试卷（事务：写 exams + exam_questions + 可选 exam_classes）
 const createExam = async ({
-    userId, title, chapter, questionType, difficulty, questions, subject, classId,
+    userId, title, chapter, questionType, difficulty, questions, subject, classId, classIds,
     status, durationMinutes, startAt, endAt, maxAttempts,
 }) => {
+    // 兼容：若只传了 classId，转成 [classId]；若传了 classIds，以 classIds 为准
+    const targetClassIds = Array.isArray(classIds) && classIds.length > 0
+        ? classIds
+        : (classId ? [classId] : []);
+    // 冗余 class_id = 第一个目标班级（保留旧列兼容）
+    const legacyClassId = targetClassIds.length > 0 ? Number(targetClassIds[0]) : null;
+
     const conn = await pool.getConnection();
     try {
         await conn.beginTransaction();
@@ -98,7 +202,7 @@ const createExam = async ({
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 userId, title, questions.length, objectiveCount, chapter || null,
-                questionType || null, difficulty || null, subject || null, classId || null,
+                questionType || null, difficulty || null, subject || null, legacyClassId,
                 status || 'published', durationMinutes || null, startAt || null, endAt || null,
                 maxAttempts || null,
             ]
@@ -129,8 +233,13 @@ const createExam = async ({
             [values]
         );
 
+        // 多选班级：写入 exam_classes
+        if (targetClassIds.length > 0) {
+            await addExamClasses(conn, examId, targetClassIds);
+        }
+
         await conn.commit();
-        return { examId, objectiveCount };
+        return { examId, objectiveCount, classIds: targetClassIds };
     } catch (err) {
         await conn.rollback();
         throw err;
@@ -185,10 +294,11 @@ const removeExam = async (id) => {
     const conn = await pool.getConnection();
     try {
         await conn.beginTransaction();
-        await conn.query('DELETE FROM \`exam_questions\` WHERE exam_id = ?', [id]);
-        await conn.query('DELETE FROM \`exam_attempts\` WHERE exam_id = ?', [id]);
-        await conn.query('DELETE FROM \`exam_drafts\` WHERE exam_id = ?', [id]);
-        await conn.query('DELETE FROM \`exams\` WHERE id = ?', [id]);
+        await conn.query('DELETE FROM `exam_classes` WHERE exam_id = ?', [id]);
+        await conn.query('DELETE FROM `exam_questions` WHERE exam_id = ?', [id]);
+        await conn.query('DELETE FROM `exam_attempts` WHERE exam_id = ?', [id]);
+        await conn.query('DELETE FROM `exam_drafts` WHERE exam_id = ?', [id]);
+        await conn.query('DELETE FROM `exams` WHERE id = ?', [id]);
         await conn.commit();
         return { id: Number(id) };
     } catch (err) {
@@ -222,7 +332,7 @@ const findExamsByUser = async (userId, { page = 1, pageSize = 20, subject, class
     return { rows, total };
 };
 
-const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, subject, classId, classIds, teacherSubjects } = {}) => {
+const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, subject, classId, classIds, studentSubjects, teacherSubjects } = {}) => {
     if (userRole === 'teacher') {
         return findExamsByUser(userId, { page, pageSize, subject, classId });
     }
@@ -231,17 +341,43 @@ const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, sub
     const params = [];
     // 学生：教师发布的班级可见试卷 + 自己创建的自建练习卷
     if (userRole === 'student') {
-        // 多对多模式：支持 classIds 数组（必修+选修）
+        // 多选班级：支持 classIds 数组（必修+选修）
         const ids = Array.isArray(classIds) && classIds.length > 0
             ? classIds.map(Number)
             : (classId ? [Number(classId)] : []);
+        // 学生所学课程科目（从班级名解析）
+        const subjects = Array.isArray(studentSubjects) && studentSubjects.length > 0
+            ? studentSubjects.map(String)
+            : [];
         let teacherClause = "u.role = 'teacher' AND (e.status IS NULL OR e.status = 'published')";
         if (ids.length > 0) {
-            const placeholders = ids.map(() => '?').join(', ');
-            teacherClause += ` AND (e.class_id IS NULL OR e.class_id IN (${placeholders}))`;
-            params.push(...ids);
+            const ph = ids.map(() => '?').join(', ');
+            if (subjects.length > 0) {
+                const sph = subjects.map(() => '?').join(', ');
+                // 可见条件：
+                // 1) 全开放卷：无班级限制 AND（无科目 或 科目在学生所学课程内）
+                // 2) 班级限定卷：班级匹配 AND 科目匹配
+                teacherClause += ` AND (
+                    (e.class_id IS NULL AND NOT EXISTS (SELECT 1 FROM exam_classes ec_sub WHERE ec_sub.exam_id = e.id)
+                     AND (e.subject IS NULL OR e.subject IN (${sph})))
+                    OR (
+                        (e.class_id IN (${ph}) OR EXISTS (SELECT 1 FROM exam_classes ec_sub WHERE ec_sub.exam_id = e.id AND ec_sub.class_id IN (${ph})))
+                        AND e.subject IN (${sph})
+                    )
+                )`;
+                params.push(...subjects, ...ids, ...ids, ...subjects);
+            } else {
+                // 有班级但解析不出科目：沿用班级匹配兜底
+                teacherClause += ` AND (
+                    (e.class_id IS NULL AND NOT EXISTS (SELECT 1 FROM exam_classes ec_sub WHERE ec_sub.exam_id = e.id))
+                    OR e.class_id IN (${ph})
+                    OR EXISTS (SELECT 1 FROM exam_classes ec_sub WHERE ec_sub.exam_id = e.id AND ec_sub.class_id IN (${ph}))
+                )`;
+                params.push(...ids, ...ids);
+            }
         } else {
-            teacherClause += ' AND e.class_id IS NULL';
+            // 无班级：只能看全开放卷
+            teacherClause += " AND (e.class_id IS NULL AND NOT EXISTS (SELECT 1 FROM exam_classes ec_sub WHERE ec_sub.exam_id = e.id))";
         }
         conditions.push(`(${teacherClause} OR e.user_id = ?)`);
         params.push(userId);
@@ -251,8 +387,8 @@ const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, sub
     }
     if (subject) { conditions.push('e.subject = ?'); params.push(subject); }
     if (userRole === 'admin' && classId) {
-        conditions.push('(e.class_id IS NULL OR e.class_id = ?)');
-        params.push(Number(classId));
+        conditions.push('(e.class_id IS NULL OR e.class_id = ? OR EXISTS (SELECT 1 FROM exam_classes ec2 WHERE ec2.exam_id = e.id AND ec2.class_id = ?))');
+        params.push(Number(classId), Number(classId));
     }
     const where = `WHERE ${conditions.join(' AND ')}`;
     const [countRows] = await pool.query(
@@ -260,15 +396,19 @@ const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, sub
     );
     const [rows] = await pool.query(
         `SELECT e.*, u.nickname creator_name, u.username creator_username, u.role creator_role,
-                (SELECT COUNT(*) FROM exam_records r WHERE r.exam_id=e.id) attempt_count
+                (SELECT COUNT(*) FROM exam_records r WHERE r.exam_id=e.id) attempt_count,
+                (SELECT GROUP_CONCAT(ec.class_id) FROM exam_classes ec WHERE ec.exam_id=e.id) AS class_ids
          FROM exams e INNER JOIN users u ON u.id=e.user_id ${where}
          ORDER BY e.id DESC LIMIT ? OFFSET ?`,
-        [...(userRole === 'admin' && classId ? [Number(classId)] : []), ...params, pageSize, offset]
+        [...params, pageSize, offset]
     );
+    rows.forEach((row) => {
+        row.class_ids = row.class_ids ? row.class_ids.split(',').map(Number) : [];
+    });
     return { rows, total: countRows[0].total };
 };
 
-// 查询试卷详情（含题目列表，带题库原题信息）
+// 查询试卷详情（含题目列表，带题库原题信息 + 多选班级列表）
 const findExamById = async (examId) => {
     const [examRows] = await pool.query(
         'SELECT e.*, u.role creator_role, u.nickname creator_name FROM `exams` e LEFT JOIN users u ON u.id=e.user_id WHERE e.id = ?', [examId]
@@ -276,9 +416,20 @@ const findExamById = async (examId) => {
     if (examRows.length === 0) return null;
     const exam = examRows[0];
 
+    // 多选班级：返回 class_ids 数组（优先用 exam_classes，冗余 class_id 兜底）
+    exam.class_ids = await findExamClassIds(examId);
+    if (exam.class_ids.length === 0 && exam.class_id) {
+        exam.class_ids = [Number(exam.class_id)];
+    }
+
     const [qRows] = await pool.query(
-        `SELECT eq.sort_order, q.* FROM \`exam_questions\` eq
-                                            LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+        `SELECT eq.question_id, eq.sort_order,
+                eq.snapshot_章节, eq.snapshot_题型, eq.snapshot_序号,
+                eq.snapshot_题目, eq.snapshot_选项, eq.snapshot_答案, eq.snapshot_解析,
+                eq.snapshot_难度, eq.snapshot_知识点,
+                q.*
+         FROM \`exam_questions\` eq
+         LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
          WHERE eq.exam_id = ? ORDER BY eq.sort_order`,
         [examId]
     );
@@ -457,30 +608,57 @@ const createRecord = async (data) => {
     try {
         await conn.beginTransaction();
 
+        // exam_records 列探测：兼容旧表无 attempt_no 的情况
+        const [recColsRows] = await conn.query(
+            `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exam_records'`
+        );
+        const recCols = new Set(recColsRows.map(r => r.COLUMN_NAME));
+        const recFields = ['exam_id', 'user_id', 'started_at', 'submitted_at', 'duration_seconds',
+                           'total_count', 'answered_count', 'correct_count', 'wrong_count', 'skipped_count',
+                           'objective_total', 'objective_correct', 'accuracy', 'score'];
+        const recPlaceholders = ['?','?','?','NOW()','?', '?','?','?','?','?', '?','?','?','?'];
+        const recParams = [
+            data.examId, data.userId, data.startedAt, data.durationSeconds,
+            data.totalCount, data.answeredCount, data.correctCount, data.wrongCount, data.skippedCount,
+            data.objectiveTotal, data.objectiveCorrect, data.accuracy, data.score
+        ];
+        if (recCols.has('attempt_no') && data.attemptNo !== undefined && data.attemptNo !== null) {
+            recFields.push('attempt_no');
+            recPlaceholders.push('?');
+            recParams.push(Number(data.attemptNo));
+        }
         const [recordResult] = await conn.query(
-            `INSERT INTO \`exam_records\`
-             (exam_id, user_id, started_at, submitted_at, duration_seconds,
-              total_count, answered_count, correct_count, wrong_count, skipped_count,
-              objective_total, objective_correct, accuracy, score)
-             VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                data.examId, data.userId, data.startedAt, data.durationSeconds,
-                data.totalCount, data.answeredCount, data.correctCount, data.wrongCount, data.skippedCount,
-                data.objectiveTotal, data.objectiveCorrect, data.accuracy, data.score
-            ]
+            `INSERT INTO \`exam_records\` (${recFields.join(', ')}) VALUES (${recPlaceholders.join(', ')})`,
+            recParams
         );
         const recordId = recordResult.insertId;
 
         const cols = await getAnswerColumns();
         const baseCols = ['record_id', 'question_id', 'question_type', 'user_answer', 'correct_answer', 'is_objective', 'is_correct'];
+        // 扩展：若 exam_id / user_id / review_* / score_rate 列存在，则一并写入
+        const optionalCols = ['exam_id', 'user_id', 'score_rate'];
         const useReviewCols = cols.has('review_status') && cols.has('review_score_rate');
-        const insertCols = useReviewCols ? [...baseCols, 'review_status', 'review_score_rate'] : baseCols;
+        const insertCols = [...baseCols];
+        optionalCols.forEach(c => { if (cols.has(c)) insertCols.push(c); });
+        if (useReviewCols) insertCols.push('review_status', 'review_score_rate');
 
         const values = data.answers.map((a) => {
             const row = [
                 recordId, a.questionId, a.questionType, a.userAnswer,
                 a.correctAnswer, a.isObjective, a.isCorrect
             ];
+            if (cols.has('exam_id')) row.push(data.examId ?? null);
+            if (cols.has('user_id')) row.push(data.userId ?? null);
+            if (cols.has('score_rate')) {
+                const evalStatus = a.evaluation?.status;
+                const rate =
+                    evalStatus === 'correct' ? 1
+                        : (evalStatus === 'partial' ? Number(a.evaluation?.scoreRate || 0)
+                            : (evalStatus === 'incorrect' || Number(a.isCorrect) === 0 ? 0
+                                : (Number(a.isCorrect) === 1 ? 1 : null)));
+                row.push(rate);
+            }
             if (useReviewCols) {
                 const evalStatus = a.evaluation?.status;
                 const initialReviewStatus =
@@ -564,24 +742,24 @@ const reviewAnswer = async ({ answerId, reviewerId, status, scoreRate, comment }
 
 const findDraft = async (userId, examId) => {
     const [rows] = await pool.query(
-        `SELECT id, exam_id, user_id, answers, duration_seconds, updated_at
+        `SELECT exam_id, user_id, answers_json, updated_at
          FROM exam_drafts WHERE user_id = ? AND exam_id = ? LIMIT 1`,
         [userId, examId]
     );
     if (!rows.length) return null;
     const r = rows[0];
     let answers = {};
-    try { answers = r.answers ? JSON.parse(typeof r.answers === 'string' ? r.answers : JSON.stringify(r.answers)) : {}; }
+    try { answers = r.answers_json ? JSON.parse(typeof r.answers_json === 'string' ? r.answers_json : JSON.stringify(r.answers_json)) : {}; }
     catch { answers = {}; }
-    return { id: r.id, exam_id: r.exam_id, user_id: r.user_id, answers, duration_seconds: r.duration_seconds || 0, updated_at: r.updated_at };
+    return { exam_id: r.exam_id, user_id: r.user_id, answers, updated_at: r.updated_at };
 };
 
-const saveDraft = async (userId, examId, { answers, durationSeconds }) => {
+const saveDraft = async (userId, examId, { answers }) => {
     const payload = typeof answers === 'string' ? answers : JSON.stringify(answers || {});
     await pool.query(
-        `INSERT INTO exam_drafts (exam_id, user_id, answers, duration_seconds) VALUES (?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE answers = VALUES(answers), duration_seconds = VALUES(duration_seconds), updated_at = NOW()`,
-        [examId, userId, payload, Number(durationSeconds) || 0]
+        `INSERT INTO exam_drafts (exam_id, user_id, answers_json) VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE answers_json = VALUES(answers_json), updated_at = NOW()`,
+        [examId, userId, payload]
     );
     return findDraft(userId, examId);
 };
@@ -645,7 +823,7 @@ const findRecordsByUser = async (userId, { page = 1, pageSize = 20 } = {}) => {
 };
 
 // 按角色权限范围查询答题记录（含提交人信息）
-const findRecordsByScope = async ({ userId, userRole, page = 1, pageSize = 20 } = {}) => {
+const findRecordsByScope = async ({ userId, userRole, page = 1, pageSize = 20, examIds } = {}) => {
     const offset = (page - 1) * pageSize;
     const conditions = [];
     const params = [];
@@ -699,8 +877,14 @@ const findRecordById = async (recordId) => {
     const record = recordRows[0];
 
     const [answerRows] = await pool.query(
-        `SELECT a.*, q.题目, q.选项, q.解析 FROM \`exam_answers\` a
-                                                     LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+        `SELECT a.*,
+                COALESCE(eq.snapshot_题目, q.题目) AS 题目,
+                COALESCE(eq.snapshot_选项, q.选项) AS 选项,
+                COALESCE(eq.snapshot_解析, q.解析) AS 解析
+         FROM \`exam_answers\` a
+         LEFT JOIN \`exam_records\` r ON a.record_id = r.id
+         LEFT JOIN \`exam_questions\` eq ON eq.exam_id = r.exam_id AND eq.question_id = a.question_id
+         LEFT JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
          WHERE a.record_id = ? ORDER BY a.id`,
         [recordId]
     );
@@ -722,8 +906,8 @@ const getStatistics = async (userId, examIds = null) => {
              COALESCE(ROUND(MIN(accuracy), 2), 0) AS min_accuracy,
              COALESCE(SUM(total_count), 0) AS total_questions,
              COALESCE(SUM(correct_count), 0) AS total_correct
-         FROM \`exam_records\` WHERE user_id = ?`,
-        [userId]
+         FROM \`exam_records\` r WHERE user_id = ?${examClause}`,
+        [userId, ...examParams]
     );
 
     // 近 20 次趋势
@@ -733,7 +917,7 @@ const getStatistics = async (userId, examIds = null) => {
          FROM \`exam_records\` r
                   LEFT JOIN \`exams\` e ON r.exam_id = e.id
                   LEFT JOIN \`users\` u ON r.user_id = u.id
-         WHERE r.user_id = ?
+         WHERE r.user_id = ?${examClause}
          ORDER BY r.submitted_at DESC LIMIT 20`,
         [userId, ...examParams]
     );
@@ -748,7 +932,7 @@ const getStatistics = async (userId, examIds = null) => {
              ROUND(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS accuracy
          FROM \`exam_answers\` a
                   INNER JOIN \`exam_records\` r ON a.record_id = r.id
-         WHERE r.user_id = ? AND a.is_objective = 1
+         WHERE r.user_id = ?${examClause} AND a.is_objective = 1
          GROUP BY a.question_type ORDER BY a.question_type`,
         [userId, ...examParams]
     );
@@ -810,7 +994,7 @@ const findRecordsByRole = async ({ role, userId, page = 1, pageSize = 20, examId
 };
 
 // 管理端：查询所有用户的答题记录（不分页，按用户+提交时间排序，含用户信息）
-const findAllRecordsWithUser = async ({ role } = {}) => {
+const findAllRecordsWithUser = async ({ role, examIds } = {}) => {
     const conditions = [];
     const params = [];
     if (role) {
@@ -917,8 +1101,8 @@ const getExamAnalytics = async (examId, classId) => {
     const exam = examRows[0];
 
     // 2. 每道题的正确率统计
-    const [questionStats] = await pool.query(
-        `SELECT eq.question_id, eq.sort_order,
+    const questionStatsSql = hasClassFilter
+        ? `SELECT eq.question_id, eq.sort_order,
                 q.题目 AS question_text, q.题型 AS question_type, q.答案 AS correct_answer,
                 COUNT(a.id) AS answered_count,
                 SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) AS correct_count,
@@ -929,7 +1113,7 @@ const getExamAnalytics = async (examId, classId) => {
                   LEFT JOIN ${QT_TABLE} q ON eq.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
                   LEFT JOIN \`exam_records\` r ON r.exam_id = eq.exam_id
                   LEFT JOIN \`exam_answers\` a ON a.record_id = r.id AND a.question_id = eq.question_id
-         WHERE eq.exam_id = ?
+         WHERE eq.exam_id = ?${classRecordFilter}
          GROUP BY eq.question_id, eq.sort_order, q.题目, q.题型, q.难度, q.答案
          ORDER BY eq.sort_order ASC`
         : `SELECT eq.question_id, eq.sort_order,
@@ -946,28 +1130,29 @@ const getExamAnalytics = async (examId, classId) => {
          WHERE eq.exam_id = ?
          GROUP BY eq.question_id, eq.sort_order, q.题目, q.题型, q.难度, q.答案
          ORDER BY eq.sort_order ASC`;
-    const [questionStats] = await pool.query(
+    let [questionStats] = await pool.query(
         questionStatsSql,
-        hasClassFilter ? [selectedClassId, examId] : [examId]
+        hasClassFilter ? [examId, selectedClassId] : [examId]
     );
 
-    // 3. 学生成绩列表
-    const [studentResults] = await pool.query(
+    // 3. 学生成绩列表（原始查询，后续按 user 去重取最佳成绩）
+    const [allStudentRows] = await pool.query(
         `SELECT r.id AS record_id, r.user_id, u.username, u.nickname, u.college, u.school,
                 r.score, r.accuracy, r.total_count, r.answered_count, r.correct_count,
                 r.wrong_count, r.skipped_count, r.duration_seconds,
                 r.started_at, r.submitted_at
          FROM \`exam_records\` r
                   INNER JOIN \`users\` u ON r.user_id = u.id
-         WHERE r.exam_id = ? AND u.role = 'student'
+         WHERE r.exam_id = ?${classRecordFilter} AND u.role = 'student'
          ORDER BY r.score DESC, r.accuracy DESC, r.submitted_at ASC`,
-        hasClassFilter ? [examId, selectedClassId] : []
+        hasClassFilter ? [examId, selectedClassId] : [examId]
     );
 
     // 4. 整体统计
     const [overview] = await pool.query(
         `SELECT
-             COUNT(*) AS participant_count,
+             COUNT(*) AS attempt_count,
+             COUNT(DISTINCT r.user_id) AS participant_count,
              COALESCE(ROUND(AVG(score), 2), 0) AS avg_score,
              COALESCE(ROUND(MAX(score), 2), 0) AS max_score,
              COALESCE(ROUND(MIN(score), 2), 0) AS min_score,
@@ -1056,10 +1241,10 @@ const getExamAnalytics = async (examId, classId) => {
              COUNT(*) AS count
          FROM \`exam_records\` r
              INNER JOIN \`users\` u ON r.user_id = u.id
-         WHERE r.exam_id = ? AND u.role = 'student'
+         WHERE r.exam_id = ?${classRecordFilter} AND u.role = 'student'
          GROUP BY range_label, range_order
          ORDER BY range_order ASC`,
-        hasClassFilter ? [examId, selectedClassId] : []
+        hasClassFilter ? [examId, selectedClassId] : [examId]
     );
 
     // 7. 及格/不及格人数
@@ -1184,4 +1369,8 @@ module.exports = {
     OBJECTIVE_TYPES,
     ensureReviewColumns,
     reviewAnswer,
+    findExamClassIds,
+    addExamClasses,
+    replaceExamClasses,
+    isExamVisibleToStudentClasses,
 };

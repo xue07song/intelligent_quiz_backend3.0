@@ -11,6 +11,252 @@ const addMissingColumns = async (table, definitions) => {
 };
 
 const ensureCompatibleSchema = async () => {
+    // ====== 1. 确保核心表存在（全部 CREATE TABLE IF NOT EXISTS，幂等）======
+    // 班级表（若不存在则创建）
+    await pool.query(`CREATE TABLE IF NOT EXISTS classes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(100) NOT NULL COMMENT '班级名称：如 人工智能1班',
+        grade VARCHAR(50) COMMENT '年级，如 2023级',
+        college VARCHAR(255) COMMENT '所属学院',
+        major VARCHAR(255) COMMENT '所属专业/科目对应',
+        type ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '班级类型：必修/选修',
+        description VARCHAR(500) COMMENT '班级说明',
+        capacity INT NOT NULL DEFAULT 50,
+        counselor_id BIGINT NULL,
+        head_teacher_id BIGINT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_classes_type (type),
+        KEY idx_classes_major (major)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='班级表'`);
+
+    // 班级-学生 多对多中间表
+    await pool.query(`CREATE TABLE IF NOT EXISTS class_students (
+        class_id INT NOT NULL,
+        user_id BIGINT NOT NULL,
+        type ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '班级归属类型：必修/选修',
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (class_id, user_id),
+        KEY idx_cs_user (user_id),
+        KEY idx_cs_type (type)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='班级学生多对多表'`);
+
+    // 试卷表（学生随机组卷生成）
+    await pool.query(`CREATE TABLE IF NOT EXISTS exams (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL COMMENT '组卷用户ID',
+        title VARCHAR(100) NOT NULL DEFAULT '练习试卷' COMMENT '试卷名称',
+        total_count INT NOT NULL DEFAULT 0 COMMENT '题目总数',
+        objective_count INT NOT NULL DEFAULT 0 COMMENT '客观题数量（可自动判分）',
+        chapter VARCHAR(50) COMMENT '章节筛选',
+        question_type VARCHAR(50) COMMENT '题型筛选',
+        difficulty VARCHAR(50) COMMENT '难度筛选',
+        subject VARCHAR(50) DEFAULT NULL COMMENT '试卷所属科目（教师组卷时必填）',
+        class_id INT DEFAULT NULL COMMENT '目标班级ID（冗余，多选班级看 exam_classes）',
+        status ENUM('draft','published','closed') NOT NULL DEFAULT 'published',
+        duration_minutes INT DEFAULT NULL,
+        start_at DATETIME DEFAULT NULL,
+        end_at DATETIME DEFAULT NULL,
+        max_attempts INT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_user (user_id),
+        INDEX idx_subject (subject),
+        INDEX idx_class (class_id),
+        INDEX idx_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='练习试卷表'`);
+
+    // 试卷-题目 关联表（快照模式）
+    await pool.query(`CREATE TABLE IF NOT EXISTS exam_questions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        exam_id INT NOT NULL,
+        question_id VARCHAR(50) NOT NULL,
+        sort_order INT NOT NULL DEFAULT 0,
+        snapshot_章节 INT NULL,
+        snapshot_题型 INT NULL,
+        snapshot_序号 INT NULL,
+        snapshot_题目 TEXT NULL,
+        snapshot_选项 TEXT NULL,
+        snapshot_答案 VARCHAR(500) NULL,
+        snapshot_解析 TEXT NULL,
+        snapshot_难度 VARCHAR(20) NULL,
+        snapshot_知识点 VARCHAR(255) NULL,
+        UNIQUE KEY uk_exam_question (exam_id, question_id),
+        KEY idx_eq_exam (exam_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='试卷题目关联表（含快照）'`);
+
+    // 试卷-班级 多选目标班级关联
+    await pool.query(`CREATE TABLE IF NOT EXISTS exam_classes (
+        exam_id INT NOT NULL,
+        class_id INT NOT NULL,
+        assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (exam_id, class_id),
+        KEY idx_ec_class (class_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='试卷目标班级多对多表'`);
+
+    // 答题尝试（用于限时/最大次数/开始时间）
+    await pool.query(`CREATE TABLE IF NOT EXISTS exam_attempts (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        exam_id INT NOT NULL,
+        user_id INT NOT NULL,
+        attempt_no INT NOT NULL DEFAULT 1,
+        started_at TIMESTAMP NULL DEFAULT NULL,
+        submitted_at TIMESTAMP NULL DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_exam_user_attempt (exam_id, user_id, attempt_no),
+        KEY idx_ea_user (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题尝试记录表（限次/限时用）'`);
+
+    // 答题草稿
+    await pool.query(`CREATE TABLE IF NOT EXISTS exam_drafts (
+        user_id INT NOT NULL,
+        exam_id INT NOT NULL,
+        answers_json MEDIUMTEXT COMMENT '用户答案JSON快照',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, exam_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题草稿表'`);
+
+    // 答题记录表
+    await pool.query(`CREATE TABLE IF NOT EXISTS exam_records (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        exam_id INT NOT NULL,
+        user_id INT NOT NULL COMMENT '作答用户',
+        started_at DATETIME NULL COMMENT '实际开始时间（服务端attempt.started_at）',
+        duration_seconds INT NOT NULL DEFAULT 0,
+        submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        total_count INT NOT NULL DEFAULT 0,
+        answered_count INT NOT NULL DEFAULT 0,
+        correct_count INT NOT NULL DEFAULT 0,
+        wrong_count INT NOT NULL DEFAULT 0,
+        skipped_count INT NOT NULL DEFAULT 0,
+        objective_total INT NOT NULL DEFAULT 0,
+        objective_correct INT NOT NULL DEFAULT 0,
+        accuracy DECIMAL(6,2) NOT NULL DEFAULT 0 COMMENT '正确率 0-100',
+        score DECIMAL(6,2) NOT NULL DEFAULT 0 COMMENT '百分制分数',
+        attempt_no INT NULL,
+        INDEX idx_user_submit (user_id, submitted_at),
+        INDEX idx_exam (exam_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题记录表'`);
+
+    // 答题详情表（注意：exam_id / user_id 允许 NULL，兼容旧版未写入的 createRecord 代码，后续可逐步补齐）
+    await pool.query(`CREATE TABLE IF NOT EXISTS exam_answers (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        record_id BIGINT NOT NULL,
+        exam_id INT NULL,
+        user_id INT NULL,
+        question_id VARCHAR(50) NOT NULL,
+        question_type INT NOT NULL COMMENT '1判断2单选3多选4填空5简答6程序',
+        is_objective TINYINT NOT NULL DEFAULT 1,
+        user_answer TEXT,
+        correct_answer VARCHAR(500) DEFAULT NULL,
+        is_correct TINYINT NOT NULL DEFAULT 2 COMMENT '0错误 1正确 2未答 3待复核',
+        score_rate DECIMAL(5,2) DEFAULT NULL COMMENT '主观题得分比例 0-1',
+        review_status VARCHAR(20) NULL COMMENT '复核状态: correct/partial/incorrect/pending',
+        review_score_rate DECIMAL(5,2) NULL,
+        review_comment VARCHAR(500) NULL,
+        reviewed_by INT NULL,
+        reviewed_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_record (record_id),
+        INDEX idx_question (question_id),
+        INDEX idx_answer_user (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题详情表'`);
+
+    // 用户收藏表
+    await pool.query(`CREATE TABLE IF NOT EXISTS user_favorites (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        question_id VARCHAR(50) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_user_question (user_id, question_id),
+        KEY idx_fav_user (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户题目收藏表'`);
+
+    // 用户反馈表（模型使用 feedbacks 表名，字段需与 feedbackModel.js LIST_SELECT / DETAIL_SELECT 一致）
+    await pool.query(`CREATE TABLE IF NOT EXISTS feedbacks (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL COMMENT '提交用户',
+        category VARCHAR(50) DEFAULT 'suggestion' COMMENT '反馈分类: bug/feature/suggestion/other',
+        title VARCHAR(255) NOT NULL,
+        content TEXT NOT NULL,
+        contact VARCHAR(255) NULL,
+        status ENUM('pending','processing','resolved','rejected','closed') NOT NULL DEFAULT 'pending',
+        reply TEXT NULL,
+        replied_by INT NULL,
+        replied_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_fb_user (user_id),
+        INDEX idx_fb_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户反馈表'`);
+
+    // 自适应练习会话 & 答题表
+    await pool.query(`CREATE TABLE IF NOT EXISTS adaptive_practice_sessions (
+        id INT NOT NULL AUTO_INCREMENT,
+        user_id INT NOT NULL,
+        chapters VARCHAR(100) DEFAULT NULL,
+        knowledge_keyword VARCHAR(200) DEFAULT NULL,
+        question_types VARCHAR(50) NOT NULL DEFAULT '1,2,3,4',
+        planned_count INT NOT NULL DEFAULT 10,
+        initial_difficulty TINYINT NOT NULL DEFAULT 1,
+        current_difficulty TINYINT NOT NULL DEFAULT 1,
+        answered_count INT NOT NULL DEFAULT 0,
+        correct_count INT NOT NULL DEFAULT 0,
+        adjustment_signal VARCHAR(10) NOT NULL DEFAULT '',
+        cooldown_remaining INT NOT NULL DEFAULT 0,
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP NULL DEFAULT NULL,
+        PRIMARY KEY (id), KEY idx_adaptive_user_time (user_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS adaptive_practice_answers (
+        id INT NOT NULL AUTO_INCREMENT,
+        session_id INT NOT NULL,
+        sequence_no INT NOT NULL,
+        question_id VARCHAR(50) NOT NULL,
+        question_type INT NOT NULL,
+        question_difficulty TINYINT NOT NULL,
+        knowledge_point VARCHAR(500) DEFAULT NULL,
+        user_answer TEXT,
+        correct_answer VARCHAR(500) DEFAULT NULL,
+        is_correct TINYINT NOT NULL,
+        difficulty_before TINYINT NOT NULL,
+        difficulty_after TINYINT NOT NULL,
+        adjustment_message VARCHAR(500) DEFAULT NULL,
+        review_status VARCHAR(20) NULL,
+        review_score_rate DECIMAL(5,2) NULL,
+        review_comment VARCHAR(500) NULL,
+        reviewed_by INT NULL,
+        reviewed_at DATETIME NULL,
+        answered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id), UNIQUE KEY uk_session_sequence (session_id, sequence_no),
+        UNIQUE KEY uk_session_question (session_id, question_id), KEY idx_adaptive_session (session_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+    // teacher_subjects / academic_colleges / academic_majors
+    await pool.query(`CREATE TABLE IF NOT EXISTS teacher_subjects (
+        user_id BIGINT NOT NULL,
+        subject VARCHAR(255) NOT NULL,
+        PRIMARY KEY (user_id, subject),
+        KEY idx_teacher_subject (subject)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS academic_colleges (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS academic_majors (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        college_id BIGINT NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_college_major (college_id, name),
+        KEY idx_major_college (college_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+    // ====== 2. 列兼容修复（新增列） ======
     await addMissingColumns('users', {
         nickname: 'VARCHAR(100) NULL',
         email: 'VARCHAR(255) NULL',
@@ -31,7 +277,7 @@ const ensureCompatibleSchema = async () => {
         科目: 'VARCHAR(255) NULL',
     });
 
-    // 题库主键宽度兼容：旧库可能只有 varchar(5)，不足以容纳批量导入/ AI 生成 ID
+    // 题库主键宽度兼容：旧库可能只有 varchar(5)
     const [idCols] = await pool.query(
         `SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '题库1' AND COLUMN_NAME = 'id'`
@@ -87,27 +333,6 @@ const ensureCompatibleSchema = async () => {
         counselor_id: 'BIGINT NULL',
         head_teacher_id: 'BIGINT NULL',
     });
-
-    await pool.query(`CREATE TABLE IF NOT EXISTS teacher_subjects (
-        user_id BIGINT NOT NULL,
-        subject VARCHAR(255) NOT NULL,
-        PRIMARY KEY (user_id, subject),
-        KEY idx_teacher_subject (subject)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-
-    await pool.query(`CREATE TABLE IF NOT EXISTS academic_colleges (
-        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL UNIQUE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS academic_majors (
-        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-        college_id BIGINT NOT NULL,
-        name VARCHAR(255) NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE KEY uk_college_major (college_id, name),
-        KEY idx_major_college (college_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 };
 
 module.exports = { ensureCompatibleSchema };

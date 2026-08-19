@@ -10,6 +10,7 @@ const auth = require('../middlewares/auth');
 const { success } = require('../utils/response');
 const { SUBJECTS } = require('../config/subjects');
 const aiAssistantRoutes = require('./aiAssistant');
+const studentRoutes = require('./student');
 
 const router = express.Router();
 
@@ -20,6 +21,7 @@ router.use('/practice', practiceRoutes);
 router.use('/ai', aiRoutes);
 router.use('/feedback', feedbackRoutes);
 router.use('/classes', classRoutes);
+router.use('/students', studentRoutes);
 
 // 科目列表（固定预定义，需登录后获取）
 router.get('/subjects', auth, (req, res) => {

@@ -237,12 +237,12 @@ const getSession = async (userId, sessionId) => {
 };
 
 const overview = async (actor) => {
-    let examIds = null;
+    let subjects = null;
     if (actor && actor.role === 'teacher') {
-        const practiceModel = require('../models/practiceModel');
-        examIds = await practiceModel.findExamIdsByUser(actor.id);
+        const userModel = require('../models/userModel');
+        subjects = await userModel.getTeacherSubjects(actor.id);
     }
-    return model.getOverview(examIds);
+    return model.getOverview(subjects);
 };
 const progress = async (userId) => model.getStudentProgress(userId);
 

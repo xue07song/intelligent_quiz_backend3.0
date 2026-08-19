@@ -11,6 +11,64 @@ const parsePage = (page, size) => {
     return { page: currentPage, size: currentSize };
 };
 
+// 当学生没有任何班级记录时，自动创建班级并随机分配必修/选修（写DB，幂等）
+async function ensureStudentHasClasses(userId, studentNo = '') {
+    const classModel = require('../models/classModel');
+    // 先查
+    let classes = await classModel.findAllClassesByStudent(userId);
+    if (classes && classes.length > 0) return classes;
+
+    // 拿所有可用班级
+    let availableClasses = await classModel.findAll({});
+
+    // 连班级表都空就先塞几个（根据 seed 里现有的班级命名）
+    if (!Array.isArray(availableClasses) || availableClasses.length === 0) {
+        const defaults = [
+            { name: '人工智能1班', grade: '2023级', type: 'compulsory', remark: '系统自动创建' },
+            { name: '人工智能2班', grade: '2023级', type: 'compulsory', remark: '系统自动创建' },
+            { name: '计算机科学与技术1班', grade: '2023级', type: 'compulsory', remark: '系统自动创建' },
+            { name: '数据结构1班', grade: '2023级', type: 'compulsory', remark: '系统自动创建' },
+            { name: '软件工程1班', grade: '2023级', type: 'elective', remark: '系统自动创建' },
+            { name: '思想政治1班', grade: '2026', type: 'elective', remark: '系统自动创建' },
+        ];
+        for (const cls of defaults) {
+            try { await classModel.create(cls); } catch (_) { /* 幂等忽略 */ }
+        }
+        availableClasses = await classModel.findAll({});
+    }
+
+    // 匹配必修：学号前 4 位 => 年份 => 找 grade 包含该年份的班级，找不到就随机
+    let compulsory = null;
+    try {
+        compulsory = await classModel.matchCompulsoryClassByStudentNo(studentNo);
+    } catch (_) {}
+    if (!compulsory) {
+        const comps = availableClasses.filter(c => (c.type || 'compulsory') === 'compulsory');
+        const pool = comps.length ? comps : availableClasses;
+        compulsory = pool[Math.floor(Math.random() * pool.length)];
+    }
+
+    // 选修：60% 概率再分配一节，与必修不同；优先选 type=elective 的
+    let others = availableClasses.filter(c => c.id !== compulsory.id);
+    let elective = null;
+    if (others.length > 0 && Math.random() > 0.4) {
+        const elecOnly = others.filter(c => c.type === 'elective');
+        const pool = elecOnly.length ? elecOnly : others;
+        elective = pool[Math.floor(Math.random() * pool.length)];
+    }
+
+    // 用 classModel.assignStudentsToClass 写入（事务 + INSERT IGNORE + 回填 users.class_id）
+    try {
+        await classModel.assignStudentsToClass(compulsory.id, [userId], 'compulsory');
+    } catch (_) {}
+    if (elective) {
+        try { await classModel.assignStudentsToClass(elective.id, [userId], 'elective'); }
+        catch (_) {}
+    }
+
+    return classModel.findAllClassesByStudent(userId);
+}
+
 const getProfile = async (userId) => {
     const user = await studentModel.findProfile(userId);
     if (!user) {
@@ -25,19 +83,33 @@ const getProfile = async (userId) => {
     } else {
         user.subjects = null;
     }
-    // 学生附带所属全部必修班（多选）
+    // 学生附带所属班级（必修 + 选修；若尚未分配则自动创建并分配）
     if (user.role === 'student') {
         const classModel = require('../models/classModel');
-        const classes = await classModel.findCompulsoryClassesByStudent(user.id);
+        const classes = await ensureStudentHasClasses(user.id, user.student_no || '');
+
+        // 新格式：[{classId, className, relationType}]
+        user.classes = classes.map(c => ({
+            classId: c.class_id,
+            className: c.class_name,
+            relationType: c.relation_type || 'compulsory',
+        }));
+        // 按类型分组
+        user.compulsoryClasses = user.classes.filter(c => c.relationType === 'compulsory');
+        user.electiveClasses = user.classes.filter(c => c.relationType === 'elective');
+
         const classIds = classes.map(c => c.class_id);
         const classNames = classes.map(c => c.class_name);
+        // 向后兼容字段
         user.classIds = classIds;
         user.classNames = classNames;
-        // 兼容字段：className / class_name 多选拼接；classId 取第一个
         user.className = classNames.length > 0 ? classNames.join('/') : null;
         user.class_name = user.className;
         user.classId = classIds[0] ?? null;
     } else {
+        user.classes = [];
+        user.compulsoryClasses = [];
+        user.electiveClasses = [];
         user.classId = null;
         user.className = null;
         user.class_name = null;
