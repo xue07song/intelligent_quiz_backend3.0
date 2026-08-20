@@ -98,7 +98,14 @@ const overview = async (caller) => {
     }
     const students = await model.getStudents(subjects);
     const classes = await model.getClasses(subjects);
-    const analyses = await Promise.all(students.map(student => analyze(student.id, caller)));
+    // 限制并发批次，避免大量学生同时查询把连接池队列打满
+    const analyses = [];
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < students.length; i += BATCH_SIZE) {
+        const batch = students.slice(i, i + BATCH_SIZE);
+        const results = await Promise.all(batch.map(student => analyze(student.id, caller)));
+        analyses.push(...results);
+    }
     const aggregateWeaknesses = list => Object.values(list.flatMap(a=>a.knowledge).reduce((m,x)=>{const i=m[x.key]||={key:x.key,answered:0,correct:0,students:0};i.answered+=x.answered;i.correct+=x.correct;i.students++;m[x.key]=i;return m},{})).map(x=>({...x,accuracy:pct(x.correct,x.answered)})).filter(x=>x.students>=2).sort((a,b)=>a.accuracy-b.accuracy).slice(0,8);
     const classWeaknesses = {};
     classes.forEach(c => { classWeaknesses[c.name] = aggregateWeaknesses(analyses.filter(a => a.student.className === c.name)); });

@@ -1103,7 +1103,7 @@ const getExamAnalytics = async (examId, classId) => {
     // 2. 每道题的正确率统计
     const questionStatsSql = hasClassFilter
         ? `SELECT eq.question_id, eq.sort_order,
-                q.题目 AS question_text, q.题型 AS question_type, q.答案 AS correct_answer,
+                q.题目 AS question_text, q.题型 AS question_type, q.难度 AS difficulty, q.答案 AS correct_answer,
                 COUNT(a.id) AS answered_count,
                 SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) AS correct_count,
                 SUM(CASE WHEN a.is_correct = 0 THEN 1 ELSE 0 END) AS wrong_count,
@@ -1201,6 +1201,7 @@ const getExamAnalytics = async (examId, classId) => {
             `SELECT eq.question_id, eq.sort_order,
                     COALESCE(eq.snapshot_题目, q.题目) AS question_text,
                     COALESCE(eq.snapshot_题型, q.题型) AS question_type,
+                    COALESCE(eq.snapshot_难度, q.难度) AS difficulty,
                     COALESCE(eq.snapshot_答案, q.答案) AS correct_answer,
                     COUNT(a.id) AS answered_count,
                     SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END) AS correct_count,
@@ -1214,6 +1215,7 @@ const getExamAnalytics = async (examId, classId) => {
              GROUP BY eq.question_id, eq.sort_order,
                       COALESCE(eq.snapshot_题目, q.题目),
                       COALESCE(eq.snapshot_题型, q.题型),
+                      COALESCE(eq.snapshot_难度, q.难度),
                       COALESCE(eq.snapshot_答案, q.答案)
              ORDER BY eq.sort_order ASC`,
             [...bestRecordIds, examId]
