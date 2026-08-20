@@ -116,6 +116,7 @@ const wrongQuestions = async (req, res, next) => {
             pageSize,
             chapter: req.query.chapter,
             questionType: req.query.questionType,
+            keyword: req.query.keyword,
         });
         res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) {
@@ -230,7 +231,7 @@ const listAdaptiveReview = async (req, res, next) => {
         const page = parseInt(req.query.page) || 1;
         const pageSize = parseInt(req.query.pageSize) || 20;
         const status = req.query.status || 'pending';
-        const result = await practiceService.listAdaptiveReview({ status, page, pageSize });
+        const result = await practiceService.listAdaptiveReview({ status, page, pageSize }, req.user.id);
         res.json(paginated(result.rows, result.total, page, pageSize));
     } catch (err) { next(err); }
 };

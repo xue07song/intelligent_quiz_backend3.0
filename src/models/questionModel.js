@@ -211,6 +211,12 @@ const statistics = async (subjects) => {
          GROUP BY 科目 ORDER BY 科目`,
         params
     );
+    const [subjectChapterStats] = await pool.query(
+        `SELECT q.科目 AS subject, q.章节 AS chapter, COALESCE(sc.title, CONCAT('第', q.章节, '章')) AS title, COUNT(*) AS count
+         FROM ${TABLE} q LEFT JOIN subjects s ON CONVERT(q.科目 USING utf8mb4) COLLATE utf8mb4_unicode_ci=s.name
+         LEFT JOIN subject_chapters sc ON sc.subject_id=s.id AND sc.chapter_no=q.章节
+         ${where} GROUP BY q.科目,q.章节,sc.title ORDER BY q.科目,q.章节`, params
+    );
     const [totalResult] = await pool.query(`SELECT COUNT(*) AS total FROM ${TABLE} ${where}`, params);
     const total = totalResult[0].total;
 
@@ -221,6 +227,7 @@ const statistics = async (subjects) => {
         byDifficulty: difficultyStats,
         byCreator: creatorStats,
         bySubject: subjectStats,
+        bySubjectChapter: subjectChapterStats,
     };
 };
 

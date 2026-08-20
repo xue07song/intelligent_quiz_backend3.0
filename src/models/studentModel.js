@@ -419,6 +419,24 @@ const findFavoritesWithoutReview = async (userId) => {
     return rows;
 };
 
+const findReviewedFavorites = async (userId) => {
+    const [rows] = await pool.query(
+        `SELECT f.question_id AS questionId, q.题目 AS title, q.题型 AS questionType,
+                q.难度 AS difficulty, q.知识点 AS knowledgePoint, q.章节 AS chapter,
+                r.result AS lastResult, r.interval_days AS intervalDays,
+                r.next_review_at AS nextReviewAt, r.reviewed_at AS lastReviewedAt
+         FROM user_favorites f
+         INNER JOIN (SELECT user_id, question_id, MAX(id) max_id FROM user_favorite_reviews
+                     WHERE user_id=? GROUP BY user_id, question_id) latest
+            ON latest.user_id=f.user_id AND latest.question_id=f.question_id
+         INNER JOIN user_favorite_reviews r ON r.id=latest.max_id
+         LEFT JOIN ${QT_TABLE} q ON f.question_id=CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE f.user_id=? ORDER BY r.reviewed_at DESC`,
+        [userId, userId]
+    );
+    return rows;
+};
+
 module.exports = {
     findProfile,
     countHistoryQuestions,
@@ -448,4 +466,5 @@ module.exports = {
     countDueReviews,
     countDueToday,
     findFavoritesWithoutReview,
+    findReviewedFavorites,
 };

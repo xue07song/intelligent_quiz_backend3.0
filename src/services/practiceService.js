@@ -102,7 +102,15 @@ const getExamInventory = async ({ chapters = [], subject } = {}, actor) => {
     // 教师限定为自己科目；管理员可按传入 subject 过滤或不限
     let subjects = [];
     if (teacherSubjects !== null) {
-        subjects = teacherSubjects;
+        if (subject && String(subject).trim()) {
+            const selected = String(subject).trim();
+            if (!teacherSubjects.includes(selected)) {
+                throw makeError(`无权使用科目「${selected}」组卷`, 403, 40303);
+            }
+            subjects = [selected];
+        } else {
+            subjects = teacherSubjects;
+        }
         if (subjects.length === 0) {
             return {
                 total: 0,
@@ -123,7 +131,7 @@ const getExamInventory = async ({ chapters = [], subject } = {}, actor) => {
 const previewRuleExam = async (options = {}, actor) => {
     const {
         chapters = [], count = 20, typeDistribution,
-        difficultyDistribution, minKnowledgePoints = 1, subject,
+        difficultyDistribution, minKnowledgePoints = 1, subject, knowledgePoints = [],
     } = options;
     const teacherSubjects = await getActorSubjects(actor);
     let subjects = [];
@@ -146,7 +154,7 @@ const previewRuleExam = async (options = {}, actor) => {
     } else if (subject) {
         subjects = [String(subject).trim()];
     }
-    const candidates = await practiceModel.findRuleExamCandidates({ chapters, subjects });
+    const candidates = await practiceModel.findRuleExamCandidates({ chapters, subjects, knowledgePoints });
     return analyzeRuleExamConfiguration({
         rawQuestions: candidates,
         count: Number(count),
@@ -160,7 +168,7 @@ const generateRuleExam = async (userId, options = {}, actor) => {
     const {
         title, chapters = [], count = 20,
         typeDistribution, difficultyDistribution, minKnowledgePoints = 1,
-        subject, classId, classIds, status, durationMinutes, startAt, endAt, maxAttempts,
+        subject, classId, classIds, status, durationMinutes, startAt, endAt, maxAttempts, knowledgePoints = [],
     } = options;
     const numCount = Number(count);
     if (!Number.isInteger(numCount) || numCount < 1 || numCount > 100) {
@@ -185,7 +193,7 @@ const generateRuleExam = async (userId, options = {}, actor) => {
     } else if (finalSubject) {
         subjects = [finalSubject];
     }
-    const candidates = await practiceModel.findRuleExamCandidates({ chapters, subjects });
+    const candidates = await practiceModel.findRuleExamCandidates({ chapters, subjects, knowledgePoints });
     const { questions, report } = assembleRuleExam({
         rawQuestions: candidates,
         count: numCount,
@@ -220,11 +228,14 @@ const getExams = async (userId, userRole, options) => {
         const classModel = require('../models/classModel');
         const allClasses = await classModel.findAllClassesByStudent(userId);
         const classIds = allClasses.map(c => c.class_id);
-        // 从班级名（科目+数字+班）解析学生所学科目
+        // 优先使用班级真实科目；兼容旧班级时再从名称解析。
         const subjectSet = new Set();
         for (const c of allClasses) {
-            const m = String(c.class_name || '').match(/^(.+?)\d+班$/);
-            if (m) subjectSet.add(m[1].trim());
+            if (c.subject) subjectSet.add(String(c.subject).trim());
+            else {
+                const m = String(c.class_name || '').match(/^(.+?)\d+班$/);
+                if (m) subjectSet.add(m[1].trim() === '人工智能' ? '人工智能基础' : m[1].trim());
+            }
         }
         options = {
             ...options,
@@ -255,8 +266,9 @@ const getExam = async (examId, userId, userRole = 'student') => {
         const allClasses = await classModel.findAllClassesByStudent(userId);
         const classIdsFromStudent = allClasses.map(c => c.class_id);
         const studentSubjects = [...new Set(allClasses.map(c => {
+            if (c.subject) return String(c.subject).trim();
             const m = String(c.class_name || '').match(/^(.+?)\d+班$/);
-            return m ? m[1].trim() : null;
+            return m ? (m[1].trim() === '人工智能' ? '人工智能基础' : m[1].trim()) : null;
         }).filter(Boolean))];
         const visible = await practiceModel.isExamVisibleToStudentClasses(examId, classIdsFromStudent, studentSubjects);
         if (!visible) {
@@ -622,6 +634,7 @@ const listWrongQuestions = async (userId, options = {}) => {
     const filter = {
         chapter: options.chapter,
         questionType: options.questionType,
+        keyword: options.keyword,
     };
     const [rows, total] = await Promise.all([
         practiceModel.findWrongQuestions(userId, { ...filter, page, pageSize }),
@@ -895,9 +908,20 @@ const reviewAdaptiveAnswer = async (reviewerId, answerId, body = {}) => {
     });
 };
 
-const listAdaptiveReview = async (options = {}) => {
+const listAdaptiveReview = async (options = {}, reviewerId) => {
     const adaptiveModel = require('../models/adaptivePracticeModel');
-    return adaptiveModel.listReviewAnswers(options);
+    const page = Math.max(Number(options.page) || 1, 1);
+    const pageSize = Math.min(Math.max(Number(options.pageSize) || 20, 1), 100);
+    const [adaptive, regular] = await Promise.all([
+        adaptiveModel.listReviewAnswers({ ...options, reviewerId, page: 1, pageSize: 100 }),
+        practiceModel.listSubjectiveReviewAnswers({ reviewerId, status: options.status }),
+    ]);
+    const combined = [
+        ...regular.map(item => ({ ...item, source: 'exam' })),
+        ...adaptive.rows.map(item => ({ ...item, source: 'adaptive' })),
+    ].sort((a, b) => new Date(b.answered_at || 0) - new Date(a.answered_at || 0));
+    const offset = (page - 1) * pageSize;
+    return { rows: combined.slice(offset, offset + pageSize), total: combined.length };
 };
 
 const updateExamSettings = async (actor, examId, data = {}) => {

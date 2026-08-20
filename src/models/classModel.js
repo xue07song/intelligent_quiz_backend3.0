@@ -12,13 +12,15 @@ const findAll = async ({ keyword, subjects, ownerId } = {}) => {
         const kw = `%${keyword.trim()}%`;
         params.push(kw, kw, kw);
     }
-    // 教师端按所教科目过滤班级：班级名需匹配「科目+数字+班」形式
-    if (Array.isArray(subjects) && subjects.length > 0) {
-        const escaped = subjects.map((s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-        conditions.push(`c.name REGEXP CONCAT('^(', ?, ')[0-9]+班$')`);
-        params.push(escaped.join('|'));
+    // 教师端优先按管理员设置的班主任/辅导员归属查询，同时兼容课程归属。
+    if (ownerId) {
+        const ownerConditions = ['c.head_teacher_id = ?', 'c.counselor_id = ?', 'EXISTS (SELECT 1 FROM teacher_classes tc WHERE tc.class_id=c.id AND tc.teacher_id=?)'];
+        params.push(Number(ownerId), Number(ownerId), Number(ownerId));
+        conditions.push(`(${ownerConditions.join(' OR ')})`);
+    } else if (Array.isArray(subjects) && subjects.length > 0) {
+        conditions.push(`c.subject IN (${subjects.map(() => '?').join(', ')})`);
+        params.push(...subjects);
     }
-    // ownerId 暂时不用于过滤（classes 表无 owner_id 列），保留参数兼容
     if (conditions.length) where = `WHERE ${conditions.join(' AND ')}`;
     const [rows] = await pool.query(
         `SELECT c.*,
@@ -29,6 +31,26 @@ const findAll = async ({ keyword, subjects, ownerId } = {}) => {
         params
     );
     return rows;
+};
+
+const setTeacherClasses = async (teacherId, classIds = []) => {
+    const ids = [...new Set(classIds.map(Number).filter(id => Number.isInteger(id) && id > 0))];
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+        await conn.query('DELETE FROM teacher_classes WHERE teacher_id = ?', [teacherId]);
+        if (ids.length) await conn.query('INSERT INTO teacher_classes (teacher_id, class_id) VALUES ?', [ids.map(id => [teacherId, id])]);
+        await conn.commit();
+        return ids;
+    } catch (error) {
+        await conn.rollback();
+        throw error;
+    } finally { conn.release(); }
+};
+
+const findTeacherClassIds = async (teacherId) => {
+    const [rows] = await pool.query('SELECT class_id FROM teacher_classes WHERE teacher_id = ? ORDER BY class_id', [teacherId]);
+    return rows.map(row => Number(row.class_id));
 };
 
 const findById = async (id) => {
@@ -61,15 +83,20 @@ const getClassColumns = async () => {
     return cachedClassColumns;
 };
 
-const create = async ({ name, grade, remark, type, college, major }) => {
+const create = async (data) => {
     const actual = await getClassColumns();
     const colMap = {
-        name: () => String(name).trim(),
-        grade: () => grade || null,
-        remark: () => remark || null,
-        type: () => type || 'compulsory',
-        college: () => college || null,
-        major: () => major || null,
+        name: () => String(data.name).trim(),
+        grade: () => data.grade || null,
+        remark: () => data.remark || data.description || null,
+        description: () => data.description || data.remark || null,
+        type: () => data.type || 'compulsory',
+        college: () => data.college || null,
+        major: () => data.major || null,
+        subject: () => data.subject === '人工智能' ? '人工智能基础' : (data.subject || null),
+        capacity: () => Number(data.capacity) > 0 ? Number(data.capacity) : 50,
+        counselor_id: () => data.counselorId || data.counselor_id || null,
+        head_teacher_id: () => data.headTeacherId || data.head_teacher_id || null,
     };
     const cols = [];
     const placeholders = [];
@@ -95,11 +122,23 @@ const update = async (id, data) => {
     const actual = await getClassColumns();
     const fields = [];
     const params = [];
-    const allowed = ['name', 'grade', 'remark', 'type', 'college', 'major'];
-    for (const field of allowed) {
-        if (data[field] !== undefined && actual.has(field)) {
-            fields.push(`${field} = ?`);
-            params.push(field === 'name' ? String(data.name).trim() : (data[field] || null));
+    const fieldMap = {
+        name: data.name,
+        grade: data.grade,
+        remark: data.remark ?? data.description,
+        description: data.description ?? data.remark,
+        type: data.type,
+        college: data.college,
+        major: data.major,
+        subject: data.subject === '人工智能' ? '人工智能基础' : data.subject,
+        capacity: data.capacity,
+        counselor_id: data.counselorId ?? data.counselor_id,
+        head_teacher_id: data.headTeacherId ?? data.head_teacher_id,
+    };
+    for (const [field, value] of Object.entries(fieldMap)) {
+        if (value !== undefined && actual.has(field)) {
+            fields.push(`\`${field}\` = ?`);
+            params.push(field === 'name' ? String(value).trim() : (value === '' ? null : value));
         }
     }
     if (fields.length === 0) return { affectedRows: 0 };
@@ -119,7 +158,7 @@ const remove = async (id) => {
 // 查询某学生的全部班级（必修+选修）
 const findAllClassesByStudent = async (studentId) => {
     const [rows] = await pool.query(
-        `SELECT c.id AS class_id, c.name AS class_name, sc.type AS relation_type
+        `SELECT c.id AS class_id, c.name AS class_name, c.subject, sc.type AS relation_type
          FROM student_classes sc
          INNER JOIN classes c ON c.id = sc.class_id
          WHERE sc.student_id = ?
@@ -134,7 +173,7 @@ const findAllClassesByStudentIds = async (studentIds) => {
     if (!studentIds || studentIds.length === 0) return [];
     const placeholders = studentIds.map(() => '?').join(', ');
     const [rows] = await pool.query(
-        `SELECT sc.student_id, c.id AS class_id, c.name AS class_name, sc.type AS relation_type
+        `SELECT sc.student_id, c.id AS class_id, c.name AS class_name, c.subject, sc.type AS relation_type
          FROM student_classes sc
          INNER JOIN classes c ON c.id = sc.class_id
          WHERE sc.student_id IN (${placeholders})
@@ -462,6 +501,8 @@ const matchCompulsoryClassByStudentNo = async (studentNo) => {
 
 module.exports = {
     findAll,
+    setTeacherClasses,
+    findTeacherClassIds,
     findById,
     findByName,
     create,

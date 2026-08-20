@@ -19,7 +19,7 @@ const listClasses = async ({ keyword } = {}, actor) => {
         const userModel = require('../models/userModel');
         subjects = await userModel.getTeacherSubjects(actor.id);
     }
-    return classModel.findAll({ keyword, subjects });
+    return classModel.findAll({ keyword, subjects, ownerId: actor?.role === 'teacher' ? actor.id : null });
 };
 
 // 班级详情（含学生列表分页）
@@ -123,6 +123,9 @@ const listAvailableStudents = async ({ page = 1, pageSize = 50, keyword } = {}, 
 // 兼容旧接口名
 const listUnassignedStudents = listAvailableStudents;
 const listTeachers = async (keyword) => classModel.findTeachers(keyword);
+const listAllClassOptions = async ({ keyword } = {}) => classModel.findAll({ keyword });
+const getMyClassIds = async (actor) => classModel.findTeacherClassIds(actor.id);
+const updateMyClasses = async (classIds, actor) => classModel.setTeacherClasses(actor.id, Array.isArray(classIds) ? classIds : []);
 const getAcademicStructure = async () => classModel.findAcademicStructure();
 const addCollege = async (name) => { if (!String(name || '').trim()) throw makeError('学院名称不能为空', 400, 40001); await classModel.createCollege(name); return getAcademicStructure(); };
 const addMajor = async (collegeId, name) => { if (!collegeId || !String(name || '').trim()) throw makeError('请选择学院并填写专业名称', 400, 40001); await classModel.createMajor(collegeId, name); return getAcademicStructure(); };
@@ -138,6 +141,9 @@ module.exports = {
     listAvailableStudents,
     listUnassignedStudents,
     listTeachers,
+    listAllClassOptions,
+    getMyClassIds,
+    updateMyClasses,
     getAcademicStructure,
     addCollege,
     addMajor,

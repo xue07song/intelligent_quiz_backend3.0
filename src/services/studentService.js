@@ -420,9 +420,11 @@ const submitFavoriteReview = async (userId, questionId, { result }) => {
 const getReviewSchedule = async (userId) => {
     const due = await studentModel.findDueReviews(userId, { page: 1, pageSize: 200 });
     const neverReviewed = await studentModel.findFavoritesWithoutReview(userId);
+    const reviewed = await studentModel.findReviewedFavorites(userId);
     return {
         due: { list: due, total: due.length },
         neverReviewed: { list: neverReviewed, total: neverReviewed.length },
+        reviewed: { list: reviewed, total: reviewed.length },
     };
 };
 

@@ -1,12 +1,14 @@
 const pool = require('../config/db');
 
-const getStudents = async (subjects = null) => {
+const getStudents = async (subjects = null, ownerId = null) => {
     let where = `WHERE u.role='student'`;
     const params = [];
-    if (Array.isArray(subjects) && subjects.length > 0) {
-        const escaped = subjects.map((s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-        where += ` AND c.name REGEXP CONCAT('^(', ?, ')[0-9]+班$')`;
-        params.push(escaped.join('|'));
+    if (ownerId) {
+        where += ' AND (c.head_teacher_id = ? OR c.counselor_id = ? OR EXISTS (SELECT 1 FROM teacher_classes tc WHERE tc.class_id=c.id AND tc.teacher_id=?))';
+        params.push(Number(ownerId), Number(ownerId), Number(ownerId));
+    } else if (Array.isArray(subjects) && subjects.length > 0) {
+        where += ` AND c.subject IN (${subjects.map(() => '?').join(', ')})`;
+        params.push(...subjects);
     }
     const [rows] = await pool.query(`SELECT u.id, u.username, u.nickname, c.id classId,
         COALESCE(c.name, '未分班') className FROM users u LEFT JOIN classes c ON c.id=u.class_id
@@ -14,13 +16,15 @@ const getStudents = async (subjects = null) => {
     return rows;
 };
 
-const getClasses = async (subjects = null) => {
+const getClasses = async (subjects = null, ownerId = null) => {
     let where = '';
     const params = [];
-    if (Array.isArray(subjects) && subjects.length > 0) {
-        const escaped = subjects.map((s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-        where = `WHERE c.name REGEXP CONCAT('^(', ?, ')[0-9]+班$')`;
-        params.push(escaped.join('|'));
+    if (ownerId) {
+        where = 'WHERE (c.head_teacher_id = ? OR c.counselor_id = ? OR EXISTS (SELECT 1 FROM teacher_classes tc WHERE tc.class_id=c.id AND tc.teacher_id=?))';
+        params.push(Number(ownerId), Number(ownerId), Number(ownerId));
+    } else if (Array.isArray(subjects) && subjects.length > 0) {
+        where = `WHERE c.subject IN (${subjects.map(() => '?').join(', ')})`;
+        params.push(...subjects);
     }
     const [rows] = await pool.query(`SELECT c.id, c.name, COUNT(DISTINCT sc.student_id) studentCount
         FROM classes c LEFT JOIN student_classes sc ON sc.class_id=c.id

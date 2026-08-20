@@ -8,6 +8,7 @@ const subjectiveEvaluation = require('./subjectiveEvaluationService');
 const ALL_TYPES = [1, 2, 3, 4, 5, 6];
 
 const normalizeOptions = (raw = {}) => {
+    const subject = String(raw.subject || '').trim();
     const chapters = [...new Set((Array.isArray(raw.chapters) ? raw.chapters : []).map(Number)
         .filter((value) => Number.isInteger(value) && value >= 1 && value <= 10))];
     const questionTypes = [...new Set((Array.isArray(raw.questionTypes) && raw.questionTypes.length ? raw.questionTypes : ALL_TYPES)
@@ -18,7 +19,8 @@ const normalizeOptions = (raw = {}) => {
     if (!Number.isInteger(questionCount) || questionCount < 5 || questionCount > 50) {
         throw Object.assign(new Error('练习题数需要设置为 5～50 题'), { statusCode: 400 });
     }
-    return { chapters, questionTypes, knowledgeKeyword, questionCount };
+    if (!subject) throw Object.assign(new Error('请先选择练习科目'), { statusCode: 400 });
+    return { subject, chapters, questionTypes, knowledgeKeyword, questionCount };
 };
 
 const summarizeInventory = (rows, requestedCount) => {
@@ -47,7 +49,7 @@ const summarizeInventory = (rows, requestedCount) => {
 const inventory = async (raw) => {
     const options = normalizeOptions(raw);
     const report = summarizeInventory(await model.getInventory(options), options.questionCount);
-    const chapterRows = await model.getChapterInventory({ chapters: options.chapters, questionTypes: options.questionTypes });
+    const chapterRows = await model.getChapterInventory({ subject: options.subject, chapters: options.chapters, questionTypes: options.questionTypes });
     const totalAvailable = chapterRows.reduce((sum, row) => sum + Number(row.total), 0);
     const presetCounts = [...new Set([5, 10, 15, 20, options.questionCount])].filter((count) => count <= totalAvailable && count >= 5);
     const plans = presetCounts.slice(0, 4).map((count, index) => ({
@@ -242,7 +244,7 @@ const overview = async (actor) => {
         const userModel = require('../models/userModel');
         subjects = await userModel.getTeacherSubjects(actor.id);
     }
-    return model.getOverview(subjects);
+    return model.getOverview(subjects, actor?.role === 'teacher' ? actor.id : null);
 };
 const progress = async (userId) => model.getStudentProgress(userId);
 
