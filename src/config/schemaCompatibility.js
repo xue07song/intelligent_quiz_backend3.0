@@ -365,6 +365,11 @@ const ensureCompatibleSchema = async () => {
         updated_at: 'TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
     });
 
+    await addMissingColumns('exam_drafts', {
+        answers_json: "MEDIUMTEXT COMMENT '用户答案JSON快照'",
+        created_at: 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+    });
+
     await addMissingColumns('exams', {
         subject: 'VARCHAR(255) NULL',
         class_id: 'BIGINT NULL',
