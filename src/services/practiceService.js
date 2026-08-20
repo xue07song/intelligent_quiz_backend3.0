@@ -128,7 +128,12 @@ const previewRuleExam = async (options = {}, actor) => {
     const teacherSubjects = await getActorSubjects(actor);
     let subjects = [];
     if (teacherSubjects !== null) {
-        subjects = teacherSubjects;
+        // 教师：如果明确指定了科目，按指定科目过滤；否则使用所有所教科目
+        if (subject && String(subject).trim()) {
+            subjects = [String(subject).trim()];
+        } else {
+            subjects = teacherSubjects;
+        }
         if (subjects.length === 0) {
             return analyzeRuleExamConfiguration({
                 rawQuestions: [],
@@ -171,7 +176,12 @@ const generateRuleExam = async (userId, options = {}, actor) => {
 
     let subjects = [];
     if (teacherSubjects !== null) {
-        subjects = teacherSubjects;
+        // 教师：如果明确指定了科目，按指定科目过滤；否则使用所有所教科目
+        if (finalSubject) {
+            subjects = [finalSubject];
+        } else {
+            subjects = teacherSubjects;
+        }
     } else if (finalSubject) {
         subjects = [finalSubject];
     }
