@@ -13,7 +13,10 @@ router.get('/', classController.list);
 // 未分班学生列表（仅教师/管理员）—— 兼容两种路径
 router.get('/unassigned/students', requireRoles('admin', 'teacher'), classController.unassigned);
 router.get('/unassigned-students', requireRoles('admin', 'teacher'), classController.unassigned);
-router.get('/teachers/options', requireRoles('admin'), classController.teachers);
+router.get('/teachers/options', requireRoles('admin', 'teacher'), classController.teachers);
+router.get('/options/all', requireRoles('teacher', 'admin'), classController.allOptions);
+router.get('/mine', requireRoles('teacher'), classController.mine);
+router.put('/mine', requireRoles('teacher'), classController.updateMine);
 router.get('/academic/structure', requireRoles('admin'), classController.structure);
 router.post('/academic/colleges', requireRoles('admin'), classController.addCollege);
 router.post('/academic/majors', requireRoles('admin'), classController.addMajor);

@@ -12,6 +12,58 @@ const addMissingColumns = async (table, definitions) => {
 
 const ensureCompatibleSchema = async () => {
     // ====== 1. 确保核心表存在（全部 CREATE TABLE IF NOT EXISTS，幂等）======
+    await pool.query(`CREATE TABLE IF NOT EXISTS subjects (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(100) NOT NULL UNIQUE,
+        status TINYINT NOT NULL DEFAULT 1,
+        created_by BIGINT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='科目目录'`);
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS subject_chapters (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        subject_id INT NOT NULL,
+        chapter_no INT NOT NULL,
+        title VARCHAR(100) NOT NULL,
+        sort_order INT NOT NULL DEFAULT 0,
+        UNIQUE KEY uk_subject_chapter (subject_id, chapter_no),
+        CONSTRAINT fk_subject_chapter_subject FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='科目章节目录'`);
+
+    const subjectCatalog = {
+        '人工智能基础': ['计算思维基础', '计算机系统基础', 'Python程序设计', '算法与问题求解', '数字素养与数字化思维', '人工智能概述', '人工智能典型应用', '人工智能关键技术', '大模型应用', '人工智能伦理与治理'],
+        '中国历史': ['中国历史基础'],
+        'Python程序设计': ['函数与参数'],
+        'JavaScript程序设计': ['事件处理'],
+        '数据库原理': ['数据库规范化'],
+    };
+    for (const [subjectName, chapterTitles] of Object.entries(subjectCatalog)) {
+        await pool.query('INSERT IGNORE INTO subjects (name) VALUES (?)', [subjectName]);
+        const [[subject]] = await pool.query('SELECT id FROM subjects WHERE name = ?', [subjectName]);
+        for (let index = 0; index < chapterTitles.length; index += 1) {
+            await pool.query(
+                `INSERT INTO subject_chapters (subject_id, chapter_no, title, sort_order)
+                 VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE title = VALUES(title), sort_order = VALUES(sort_order)`,
+                [subject.id, index + 1, chapterTitles[index], index + 1]
+            );
+        }
+    }
+
+    // 旧版科目名「人工智能」对应当前完整课程「人工智能基础」。
+    await pool.query(
+        `INSERT IGNORE INTO teacher_subjects (user_id, subject)
+         SELECT user_id, '人工智能基础' FROM teacher_subjects WHERE subject = '人工智能'`
+    );
+    await pool.query("DELETE FROM teacher_subjects WHERE subject = '人工智能'");
+
+    // 只归类历史遗留的空科目数据；明确 ID 规则避免误判用户后续新增题。
+    await pool.query("UPDATE `题库1` SET `科目` = '人工智能基础' WHERE (`科目` IS NULL OR TRIM(`科目`) = '') AND id REGEXP '^[0-9]{5}$'");
+    await pool.query("UPDATE `题库1` SET `科目` = '中国历史', `章节` = 1 WHERE (`科目` IS NULL OR TRIM(`科目`) = '') AND id REGEXP '^Q00[1-8]$'");
+    await pool.query("UPDATE `题库1` SET `科目` = 'Python程序设计', `章节` = 1 WHERE id = 'AI001' AND (`科目` IS NULL OR TRIM(`科目`) = '')");
+    await pool.query("UPDATE `题库1` SET `科目` = 'JavaScript程序设计', `章节` = 1 WHERE id = 'AI002' AND (`科目` IS NULL OR TRIM(`科目`) = '')");
+    await pool.query("UPDATE `题库1` SET `科目` = '数据库原理', `章节` = 1 WHERE id = 'AI003' AND (`科目` IS NULL OR TRIM(`科目`) = '')");
+
     // 班级表（若不存在则创建）
     await pool.query(`CREATE TABLE IF NOT EXISTS classes (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -399,6 +451,7 @@ const ensureCompatibleSchema = async () => {
         reviewed_by: 'INT NULL',
         reviewed_at: 'DATETIME NULL',
     });
+    await addMissingColumns('adaptive_practice_sessions', { subject: 'VARCHAR(100) NULL' });
 
     await addMissingColumns('classes', {
         college: 'VARCHAR(255) NULL',
@@ -406,7 +459,17 @@ const ensureCompatibleSchema = async () => {
         capacity: 'INT NOT NULL DEFAULT 50',
         counselor_id: 'BIGINT NULL',
         head_teacher_id: 'BIGINT NULL',
+        subject: 'VARCHAR(100) NULL',
+        description: 'VARCHAR(500) NULL',
     });
+    await pool.query("UPDATE classes SET subject = '人工智能基础' WHERE subject = '人工智能'");
+    await pool.query(`CREATE TABLE IF NOT EXISTS teacher_classes (
+        teacher_id BIGINT NOT NULL,
+        class_id INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (teacher_id, class_id),
+        KEY idx_teacher_classes_class (class_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 };
 
 module.exports = { ensureCompatibleSchema };

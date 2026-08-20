@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const registrationModel = require('../models/registrationModel');
 const userModel = require('../models/userModel');
+const subjectModel = require('../models/subjectModel');
 
 const SALT_ROUNDS = 10;
 // 注册申请允许的角色（不允许直接申请 admin）
@@ -33,6 +34,15 @@ const submit = async (data) => {
         error.errorCode = 40002;
         throw error;
     }
+    const requestedSubjects = data.role === 'teacher'
+        ? await subjectModel.ensureMany(data.subjects)
+        : [];
+    if (data.role === 'teacher' && requestedSubjects.length === 0) {
+        const error = new Error('请至少选择或创建一个所教科目');
+        error.statusCode = 400;
+        throw error;
+    }
+    for (const name of requestedSubjects) await subjectModel.ensureDefaultChapter(name);
 
     // 用户名在正式用户表和申请表中都不能重复
     const existingUser = await userModel.findByUsername(username);
@@ -53,7 +63,7 @@ const submit = async (data) => {
 
     if (existingRequest) {
         const hashedPassword = bcrypt.hashSync(data.password, SALT_ROUNDS);
-        await registrationModel.reset(existingRequest.id, { ...data, password: hashedPassword });
+        await registrationModel.reset(existingRequest.id, { ...data, subjects: requestedSubjects, password: hashedPassword });
         return { id: existingRequest.id };
     }
 
@@ -64,7 +74,7 @@ const submit = async (data) => {
         role: data.role,
         college: data.college ? String(data.college).trim() : null,
         major: data.major ? String(data.major).trim() : null,
-        subjects: data.subjects ? String(data.subjects).trim() : null,
+        subjects: requestedSubjects.length ? requestedSubjects.join(',') : null,
         grade: data.grade ? String(data.grade).trim() : null,
         student_no: data.student_no ? String(data.student_no).trim() : null,
         employee_no: data.employee_no ? String(data.employee_no).trim() : null,

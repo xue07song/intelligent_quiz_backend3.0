@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const userModel = require('../models/userModel');
 const { filterValidSubjects } = require('../config/subjects');
+const subjectModel = require('../models/subjectModel');
 
 const SALT_ROUNDS = 10;
 const VALID_ROLES = ['admin', 'teacher', 'student'];
@@ -69,6 +70,8 @@ const createUser = async (data) => {
     // 教师创建后写入科目关联
     if (data.role === 'teacher') {
         const subjects = filterValidSubjects(data.subjects);
+        await subjectModel.ensureMany(subjects);
+        for (const name of subjects) await subjectModel.ensureDefaultChapter(name);
         const newId = result.insertId;
         if (newId) {
             await userModel.setTeacherSubjects(newId, subjects);
@@ -99,6 +102,8 @@ const updateUser = async (id, data) => {
     // 若目标角色是教师且请求带 subjects 字段，则全量替换科目
     if (targetRole === 'teacher' && data.subjects !== undefined) {
         const subjects = filterValidSubjects(data.subjects);
+        await subjectModel.ensureMany(subjects);
+        for (const name of subjects) await subjectModel.ensureDefaultChapter(name);
         await userModel.setTeacherSubjects(id, subjects);
     }
 

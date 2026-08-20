@@ -60,9 +60,10 @@ const ensureTables = async () => {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 };
 
-const filters = ({ chapters = [], questionTypes = ALL_TYPES, knowledgeKeyword = '', difficulty } = {}, alias = 'q') => {
+const filters = ({ subject = '', chapters = [], questionTypes = ALL_TYPES, knowledgeKeyword = '', difficulty } = {}, alias = 'q') => {
     const conditions = [`${alias}.题型 IN (${questionTypes.map(() => '?').join(',')})`];
     const params = [...questionTypes];
+    if (subject) { conditions.push(`${alias}.科目 = ?`); params.push(subject); }
     if (chapters.length) {
         conditions.push(`${alias}.章节 IN (${chapters.map(() => '?').join(',')})`);
         params.push(...chapters);
@@ -91,8 +92,8 @@ const getInventory = async (options) => {
     return rows;
 };
 
-const getChapterInventory = async ({ chapters = [], questionTypes = ALL_TYPES } = {}) => {
-    const f = filters({ chapters, questionTypes });
+const getChapterInventory = async ({ subject = '', chapters = [], questionTypes = ALL_TYPES } = {}) => {
+    const f = filters({ subject, chapters, questionTypes });
     const [rows] = await pool.query(
         `SELECT q.章节 chapter, ${normalizeDifficultySql} difficulty, q.题型 questionType, COUNT(*) total
          FROM ${QT_TABLE} q WHERE ${f.where} GROUP BY q.章节, difficulty, q.题型 ORDER BY q.章节, difficulty`, f.params
@@ -100,27 +101,32 @@ const getChapterInventory = async ({ chapters = [], questionTypes = ALL_TYPES } 
     return rows;
 };
 
-const getOverview = async (subjects = null) => {
+const getOverview = async (subjects = null, ownerId = null) => {
     await ensureTables();
     const hasSubjects = Array.isArray(subjects) && subjects.length > 0;
     if (Array.isArray(subjects) && subjects.length === 0) {
         return { users: [], recentSessions: [], classes: [] };
     }
-    const classMatch = hasSubjects
-        ? ` AND c.name REGEXP CONCAT('^(', ?, ')[0-9]+班$')`
-        : '';
-    const classParams = hasSubjects ? [subjects.map((s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')] : [];
+    const classMatch = ownerId
+        ? ' AND (c.head_teacher_id = ? OR c.counselor_id = ? OR EXISTS (SELECT 1 FROM teacher_classes tc WHERE tc.class_id=c.id AND tc.teacher_id=?))'
+        : (hasSubjects ? ` AND c.subject IN (${subjects.map(() => '?').join(', ')})` : '');
+    const classParams = ownerId ? [Number(ownerId), Number(ownerId), Number(ownerId)] : (hasSubjects ? subjects : []);
+    const membershipJoin = ownerId
+        ? 'INNER JOIN student_classes membership ON membership.student_id=u.id INNER JOIN classes c ON c.id=membership.class_id'
+        : 'LEFT JOIN student_classes membership ON membership.student_id=u.id LEFT JOIN classes c ON c.id=membership.class_id';
 
     const [users] = await pool.query(
         `SELECT u.id userId, u.username, u.nickname, c.id classId, COALESCE(c.name, '未分班') className,
           COUNT(CASE WHEN s.answered_count > 0 THEN s.id END) sessionCount,
+          COALESCE(SUM(CASE WHEN s.answered_count > 0 THEN s.planned_count ELSE 0 END),0) plannedCount,
           COALESCE(SUM(s.answered_count),0) answeredCount,
           COALESCE(SUM(s.correct_count),0) correctCount,
           COALESCE(ROUND(SUM(s.correct_count)*100/NULLIF(SUM(CASE WHEN s.answered_count > 0 THEN s.answered_count END),0),2),0) accuracy,
           COALESCE(MAX(s.current_difficulty),1) highestDifficulty,
           MAX(CASE WHEN s.answered_count > 0 THEN s.updated_at END) lastPracticeAt
-         FROM users u LEFT JOIN adaptive_practice_sessions s ON s.user_id=u.id
-         LEFT JOIN classes c ON c.id=u.class_id
+         FROM users u
+         ${membershipJoin}
+         LEFT JOIN adaptive_practice_sessions s ON s.user_id=u.id
          WHERE u.role='student' ${classMatch}
          GROUP BY u.id, u.username, u.nickname, c.id, c.name
          ORDER BY className, lastPracticeAt DESC, u.id`,
@@ -129,7 +135,7 @@ const getOverview = async (subjects = null) => {
     const [sessions] = await pool.query(
         `SELECT s.*, u.username, u.nickname, c.id classId, COALESCE(c.name, '未分班') className
          FROM adaptive_practice_sessions s INNER JOIN users u ON u.id=s.user_id
-         LEFT JOIN classes c ON c.id=u.class_id
+         ${membershipJoin}
          WHERE s.answered_count > 0 ${classMatch} ORDER BY s.updated_at DESC LIMIT 100`,
         classParams
     );
@@ -176,13 +182,13 @@ const getStudentProgress = async (userId) => {
     return { summary: summaryRows[0], sessions, byDifficulty: difficulty, byKnowledge: knowledge };
 };
 
-const createSession = async ({ userId, chapters, knowledgeKeyword, questionTypes, plannedCount }) => {
+const createSession = async ({ userId, subject, chapters, knowledgeKeyword, questionTypes, plannedCount }) => {
     await ensureTables();
     const [result] = await pool.query(
         `INSERT INTO adaptive_practice_sessions
-         (user_id, chapters, knowledge_keyword, question_types, planned_count, initial_difficulty, current_difficulty)
-         VALUES (?, ?, ?, ?, ?, 1, 1)`,
-        [userId, chapters.join(','), knowledgeKeyword || null, questionTypes.join(','), plannedCount]
+         (user_id, subject, chapters, knowledge_keyword, question_types, planned_count, initial_difficulty, current_difficulty)
+         VALUES (?, ?, ?, ?, ?, ?, 1, 1)`,
+        [userId, subject || null, chapters.join(','), knowledgeKeyword || null, questionTypes.join(','), plannedCount]
     );
     return findSession(result.insertId, userId);
 };
@@ -204,6 +210,7 @@ const findAnswers = async (sessionId) => {
 
 const findNextQuestion = async (session) => {
     const base = {
+        subject: session.subject || '',
         chapters: String(session.chapters || '').split(',').filter(Boolean).map(Number),
         questionTypes: String(session.question_types).split(',').map(Number).filter(t => ALL_TYPES.includes(t)),
         knowledgeKeyword: session.knowledge_keyword || '',
@@ -248,6 +255,7 @@ const findNextQuestion = async (session) => {
 
 const findEligibleQuestionById = async (session, questionId) => {
     const options = {
+        subject: session.subject || '',
         chapters: String(session.chapters || '').split(',').filter(Boolean).map(Number),
         questionTypes: String(session.question_types).split(',').map(Number),
         knowledgeKeyword: session.knowledge_keyword || '',
@@ -320,11 +328,17 @@ const reviewAdaptiveAnswer = async ({ id, reviewerId, status, scoreRate, comment
     return findAdaptiveAnswerById(id);
 };
 
-const listReviewAnswers = async ({ status = 'pending', page = 1, pageSize = 20 } = {}) => {
+const listReviewAnswers = async ({ status = 'pending', page = 1, pageSize = 20, reviewerId } = {}) => {
     const currentPage = Math.max(parseInt(page, 10) || 1, 1);
     const currentSize = Math.min(Math.max(parseInt(pageSize, 10) || 20, 1), 100);
     const conditions = [];
     const params = [];
+    if (reviewerId) {
+        conditions.push(`EXISTS (SELECT 1 FROM student_classes sc JOIN classes c ON c.id=sc.class_id
+            WHERE sc.student_id=s.user_id AND (c.head_teacher_id=? OR c.counselor_id=? OR EXISTS
+            (SELECT 1 FROM teacher_classes tc WHERE tc.class_id=c.id AND tc.teacher_id=?)))`);
+        params.push(Number(reviewerId), Number(reviewerId), Number(reviewerId));
+    }
     if (status === 'pending') {
         conditions.push('a.review_status IS NULL AND a.is_correct = 3');
     } else if (status === 'reviewed') {
@@ -335,7 +349,8 @@ const listReviewAnswers = async ({ status = 'pending', page = 1, pageSize = 20 }
     }
     const where = `WHERE ${conditions.join(' AND ')}`;
     const [countRows] = await pool.query(
-        `SELECT COUNT(*) AS total FROM adaptive_practice_answers a ${where}`,
+        `SELECT COUNT(*) AS total FROM adaptive_practice_answers a
+         INNER JOIN adaptive_practice_sessions s ON s.id = a.session_id ${where}`,
         params
     );
     const [rows] = await pool.query(

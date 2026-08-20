@@ -56,7 +56,7 @@ const remove = async (req, res, next) => {
 // 学生分班 / 调班（批量）
 const assignStudents = async (req, res, next) => {
     try {
-        const { studentIds, studentId } = req.body;
+        const { studentIds, studentId } = req.body || {};
         const ids = Array.isArray(studentIds) ? studentIds : (studentId ? [studentId] : []);
         const result = await classService.assignStudents(req.params.id, ids, req.user);
         res.json(success(result, `✅ 已成功添加 ${result.assigned} 名学生`));
@@ -68,7 +68,7 @@ const assignStudents = async (req, res, next) => {
 // 把学生移出班级（仅移出当前班级，不影响其他班级关系）
 const removeStudents = async (req, res, next) => {
     try {
-        let { studentIds } = req.body;
+        let { studentIds } = req.body || {};
         // 兼容 DELETE /:id/students/:sid 的路径参数方式
         if (!studentIds && req.params.studentId) {
             studentIds = [Number(req.params.studentId)];
@@ -116,10 +116,13 @@ const teachers = async (req, res, next) => {
     try { res.json(success(await classService.listTeachers(req.query.keyword))); }
     catch (err) { next(err); }
 };
+const allOptions = async (req, res, next) => { try { res.json(success(await classService.listAllClassOptions({ keyword: req.query.keyword }))); } catch (err) { next(err); } };
+const mine = async (req, res, next) => { try { res.json(success(await classService.getMyClassIds(req.user))); } catch (err) { next(err); } };
+const updateMine = async (req, res, next) => { try { res.json(success(await classService.updateMyClasses(req.body.classIds, req.user), '管理班级已更新')); } catch (err) { next(err); } };
 const structure = async (req, res, next) => { try { res.json(success(await classService.getAcademicStructure())); } catch (err) { next(err); } };
 const addCollege = async (req, res, next) => { try { res.status(201).json(success(await classService.addCollege(req.body.name), '学院创建成功')); } catch (err) { next(err); } };
 const addMajor = async (req, res, next) => { try { res.status(201).json(success(await classService.addMajor(req.body.collegeId, req.body.name), '专业创建成功')); } catch (err) { next(err); } };
 
 module.exports = {
-    list, detail, create, update, remove, assignStudents, removeStudents, unassigned, transfer, teachers, structure, addCollege, addMajor,
+    list, detail, create, update, remove, assignStudents, removeStudents, unassigned, transfer, teachers, allOptions, mine, updateMine, structure, addCollege, addMajor,
 };

@@ -45,12 +45,15 @@ const randomPick = async ({ 章节, 题型, 难度, count, 科目 }) => {
 };
 
 // 规则组卷候选题，使用 exam_questions 实时计算题目历史使用次数
-const findRuleExamCandidates = async ({ chapters = [], subjects = [] } = {}) => {
+const findRuleExamCandidates = async ({ chapters = [], subjects = [], knowledgePoints = [] } = {}) => {
     const normalizedChapters = Array.isArray(chapters)
         ? [...new Set(chapters.map(Number).filter((chapter) => Number.isInteger(chapter) && chapter >= 1 && chapter <= 10))]
         : [];
     const normalizedSubjects = Array.isArray(subjects)
         ? subjects.map((s) => String(s).trim()).filter(Boolean)
+        : [];
+    const normalizedKnowledgePoints = Array.isArray(knowledgePoints)
+        ? knowledgePoints.map((point) => String(point).trim()).filter(Boolean)
         : [];
     const conditions = [];
     const params = [];
@@ -61,6 +64,10 @@ const findRuleExamCandidates = async ({ chapters = [], subjects = [] } = {}) => 
     if (normalizedSubjects.length) {
         conditions.push(`q.科目 IN (${normalizedSubjects.map(() => '?').join(', ')})`);
         params.push(...normalizedSubjects);
+    }
+    if (normalizedKnowledgePoints.length) {
+        conditions.push(`q.\`知识点\` IN (${normalizedKnowledgePoints.map(() => '?').join(', ')})`);
+        params.push(...normalizedKnowledgePoints);
     }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const [rows] = await pool.query(
@@ -480,7 +487,7 @@ const findQuestionsByIds = async (ids) => {
 // ================================================================
 // [修改] 错题本：统计当前用户最近一次做错的题目数
 // ================================================================
-const countWrongQuestions = async (userId, { chapter, questionType } = {}) => {
+const countWrongQuestions = async (userId, { chapter, questionType, keyword } = {}) => {
     let sql = `
         SELECT COUNT(*) AS total
         FROM (
@@ -503,6 +510,11 @@ const countWrongQuestions = async (userId, { chapter, questionType } = {}) => {
         sql += ` AND q.题型 = ?`;
         params.push(Number(questionType));
     }
+    if (keyword && String(keyword).trim()) {
+        sql += ` AND (q.题目 LIKE ? OR q.知识点 LIKE ? OR q.id LIKE ?)`;
+        const value = `%${String(keyword).trim()}%`;
+        params.push(value, value, value);
+    }
     const [rows] = await pool.query(sql, params);
     return rows[0].total;
 };
@@ -510,14 +522,16 @@ const countWrongQuestions = async (userId, { chapter, questionType } = {}) => {
 // ================================================================
 // [修改] 错题本：分页列出错题（仅最近一次作答为错误的题目）
 // ================================================================
-const findWrongQuestions = async (userId, { page = 1, pageSize = 20, chapter, questionType } = {}) => {
+const findWrongQuestions = async (userId, { page = 1, pageSize = 20, chapter, questionType, keyword } = {}) => {
     const offset = (page - 1) * pageSize;
     let sql = `
         SELECT q.id, q.章节 AS chapter, q.题型 AS question_type, q.题目 AS title,
                q.选项 AS options, q.难度 AS difficulty, q.知识点 AS knowledge_point,
                q.答案 AS correct_answer,
                a.is_correct, a.user_answer, a.correct_answer AS last_correct_answer,
-               r2.submitted_at AS last_wrong_at
+               r2.submitted_at AS last_wrong_at, r2.exam_id, e.title AS exam_title,
+               (SELECT COUNT(*) FROM exam_answers aw JOIN exam_records rw ON rw.id=aw.record_id
+                WHERE rw.user_id=? AND aw.question_id=a.question_id AND aw.is_correct=0) AS wrong_count
         FROM (
                  SELECT a.question_id, MAX(a.id) AS max_id
                  FROM exam_answers a
@@ -527,10 +541,11 @@ const findWrongQuestions = async (userId, { page = 1, pageSize = 20, chapter, qu
              ) latest
                  JOIN exam_answers a ON a.id = latest.max_id
                  JOIN exam_records r2 ON a.record_id = r2.id
+                 LEFT JOIN exams e ON e.id=r2.exam_id
                  JOIN ${QT_TABLE} q ON a.question_id = CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
         WHERE a.is_correct = 0
     `;
-    const params = [userId];
+    const params = [userId, userId];
     if (chapter !== undefined && chapter !== '' && chapter !== null) {
         sql += ` AND q.章节 = ?`;
         params.push(chapter);
@@ -538,6 +553,11 @@ const findWrongQuestions = async (userId, { page = 1, pageSize = 20, chapter, qu
     if (questionType !== undefined && questionType !== '' && questionType !== null) {
         sql += ` AND q.题型 = ?`;
         params.push(Number(questionType));
+    }
+    if (keyword && String(keyword).trim()) {
+        sql += ` AND (q.题目 LIKE ? OR q.知识点 LIKE ? OR q.id LIKE ?)`;
+        const value = `%${String(keyword).trim()}%`;
+        params.push(value, value, value);
     }
     sql += ` ORDER BY r2.submitted_at DESC LIMIT ? OFFSET ?`;
     params.push(pageSize, offset);
@@ -711,6 +731,30 @@ const findAnswerRecord = async (answerId) => {
         [answerId]
     );
     return rows[0] || null;
+};
+
+const listSubjectiveReviewAnswers = async ({ reviewerId, status = 'pending' } = {}) => {
+    await ensureReviewColumns();
+    const statusClause = status === 'reviewed'
+        ? "a.review_status IN ('correct','partial','incorrect')"
+        : "(a.is_correct = 3 OR a.review_status = 'review')";
+    const [rows] = await pool.query(
+        `SELECT a.id, a.user_answer, a.correct_answer, a.question_type, a.review_status,
+                a.review_comment, r.submitted_at AS answered_at, u.username, u.nickname,
+                COALESCE(eq.snapshot_题目, q.题目) AS title,
+                COALESCE(eq.snapshot_选项, q.选项) AS options,
+                q.知识点 AS knowledge_point
+         FROM exam_answers a
+         INNER JOIN exam_records r ON r.id=a.record_id
+         INNER JOIN exams e ON e.id=r.exam_id
+         INNER JOIN users u ON u.id=r.user_id
+         LEFT JOIN exam_questions eq ON eq.exam_id=e.id AND eq.question_id=a.question_id
+         LEFT JOIN ${QT_TABLE} q ON a.question_id=CONVERT(q.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+         WHERE e.user_id=? AND a.question_type IN (4,5,6) AND ${statusClause}
+         ORDER BY a.id DESC`,
+        [reviewerId]
+    );
+    return rows;
 };
 
 const reviewAnswer = async ({ answerId, reviewerId, status, scoreRate, comment }) => {
@@ -1343,6 +1387,7 @@ module.exports = {
     findExamById,
     findQuestionsByIds,
     findAnswerRecord,
+    listSubjectiveReviewAnswers,
     countWrongQuestions,
     findWrongQuestions,
     findWrongQuestionIds,

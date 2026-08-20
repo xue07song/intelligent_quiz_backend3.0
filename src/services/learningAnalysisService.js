@@ -96,8 +96,9 @@ const overview = async (caller) => {
         const userModel = require('../models/userModel');
         subjects = await userModel.getTeacherSubjects(caller.id);
     }
-    const students = await model.getStudents(subjects);
-    const classes = await model.getClasses(subjects);
+    const ownerId = caller?.role === 'teacher' ? caller.id : null;
+    const students = await model.getStudents(subjects, ownerId);
+    const classes = await model.getClasses(subjects, ownerId);
     // 限制并发批次，避免大量学生同时查询把连接池队列打满
     const analyses = [];
     const BATCH_SIZE = 5;
