@@ -319,7 +319,7 @@ const removeExam = async (id) => {
 // 查询用户试卷列表
 const findExamsByUser = async (userId, { page = 1, pageSize = 20, subject, classId } = {}) => {
     const offset = (page - 1) * pageSize;
-    const conditions = ['e.user_id = ?'];
+    const conditions = ['e.user_id = ?', "(e.status IS NULL OR e.status <> 'draft')"];
     const params = [userId];
     if (subject) { conditions.push('e.subject = ?'); params.push(subject); }
     if (classId) { conditions.push('(e.class_id IS NULL OR e.class_id = ?)'); params.push(Number(classId)); }
@@ -390,7 +390,7 @@ const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, sub
         params.push(userId);
     } else {
         // 管理员：查看所有教师发布的试卷
-        conditions.push("u.role='teacher'");
+        conditions.push("u.role='teacher'", "(e.status IS NULL OR e.status <> 'draft')");
     }
     if (subject) { conditions.push('e.subject = ?'); params.push(subject); }
     if (userRole === 'admin' && classId) {
@@ -731,6 +731,37 @@ const findAnswerRecord = async (answerId) => {
         [answerId]
     );
     return rows[0] || null;
+};
+
+// 更新试卷中的快照内容。题库原题不受影响，已生成试卷可独立修订。
+const updateExamQuestionSnapshots = async (examId, questions = []) => {
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+        for (const item of questions) {
+            const sortOrder = Number(item.sortOrder || item.sort_order);
+            if (!Number.isInteger(sortOrder) || sortOrder < 1) continue;
+            await conn.query(
+                `UPDATE \`exam_questions\`
+                 SET snapshot_题目=?, snapshot_选项=?, snapshot_答案=?, snapshot_解析=?
+                 WHERE exam_id=? AND sort_order=?`,
+                [
+                    String(item.content ?? item.题目 ?? '').trim(),
+                    String(item.options ?? item.选项 ?? ''),
+                    String(item.answer ?? item.答案 ?? ''),
+                    String(item.explanation ?? item.解析 ?? ''),
+                    examId,
+                    sortOrder,
+                ]
+            );
+        }
+        await conn.commit();
+    } catch (err) {
+        await conn.rollback();
+        throw err;
+    } finally {
+        conn.release();
+    }
 };
 
 const listSubjectiveReviewAnswers = async ({ reviewerId, status = 'pending' } = {}) => {
@@ -1379,6 +1410,7 @@ module.exports = {
     createExam,
     countExamRecords,
     updateExam,
+    updateExamQuestionSnapshots,
     updateExamStatus,
     removeExam,
     findExamsByUser,

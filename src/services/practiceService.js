@@ -953,6 +953,19 @@ const updateExamSettings = async (actor, examId, data = {}) => {
     return practiceModel.findExamById(examId);
 };
 
+const updateExamContent = async (actor, examId, data = {}) => {
+    const exam = await practiceModel.findExamById(examId);
+    if (!exam) throw makeError('试卷不存在', 404, 40401);
+    if (actor.role !== 'admin' && exam.user_id !== actor.id) {
+        throw makeError('只能编辑自己创建的试卷', 403, 40301);
+    }
+    const questions = Array.isArray(data.questions) ? data.questions : [];
+    if (!questions.length) throw makeError('请提交需要保存的试卷内容', 400, 40001);
+    if (data.title !== undefined) await practiceModel.updateExam(examId, { title: String(data.title).trim() || exam.title });
+    await practiceModel.updateExamQuestionSnapshots(examId, questions);
+    return practiceModel.findExamById(examId);
+};
+
 const updateExamStatus = async (actor, examId, status) => {
     const allowedStatus = ['draft', 'published', 'closed'];
     if (!allowedStatus.includes(status)) throw makeError('无效的试卷状态', 400, 40001);
@@ -1097,6 +1110,7 @@ module.exports = {
     getExamDraft,
     saveExamDraft,
     updateExamSettings,
+    updateExamContent,
     updateExamStatus,
     deleteExam,
     listWrongQuestions,

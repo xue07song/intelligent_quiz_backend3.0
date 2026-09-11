@@ -43,6 +43,7 @@ router.post('/exams/:id/start', requireRoles('student'), practiceController.star
 
 // 试卷生命周期管理（教师本人/管理员）
 router.patch('/exams/:id/status', requireRoles('admin', 'teacher'), practiceController.updateExamStatus);
+router.put('/exams/:id/content', requireRoles('admin', 'teacher'), practiceController.updateExamContent);
 router.put('/exams/:id', requireRoles('admin', 'teacher'), practiceController.updateExam);
 router.delete('/exams/:id', requireRoles('admin', 'teacher'), practiceController.removeExam);
 
