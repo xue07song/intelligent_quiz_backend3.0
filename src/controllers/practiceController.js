@@ -331,6 +331,15 @@ const updateExam = async (req, res, next) => {
     }
 };
 
+const updateExamContent = async (req, res, next) => {
+    try {
+        const exam = await practiceService.updateExamContent(buildActor(req), req.params.id, req.body);
+        res.json(success(exam, '试卷内容已保存'));
+    } catch (err) {
+        next(err);
+    }
+};
+
 const removeExam = async (req, res, next) => {
     try {
         await practiceService.deleteExam(req.user, req.params.id);
@@ -372,5 +381,6 @@ module.exports = {
     startExam,
     updateExamStatus,
     updateExam,
+    updateExamContent,
     removeExam,
 };

@@ -1,5 +1,5 @@
 const XLSX = require('xlsx');
-const { Document, Packer, Paragraph, TextRun, PageBreak, AlignmentType } = require('docx');
+const { Document, Packer, Paragraph, TextRun, PageBreak, AlignmentType, Table, TableRow, TableCell, WidthType } = require('docx');
 const practiceService = require('./practiceService');
 
 const TYPE_NAMES = {
@@ -19,72 +19,105 @@ const typeName = (type) => TYPE_NAMES[Number(type)] || `题型${type}`;
 
 const splitLines = (text) => String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 
-const buildDocx = (exam, withAnswers) => {
-    const children = [];
+const finalHeading = (text) => new Paragraph({
+    children: [new TextRun({ text, bold: true, size: 32, color: '000000' })],
+    alignment: AlignmentType.CENTER,
+    spacing: { after: 260 },
+});
 
-    children.push(new Paragraph({
-        text: exam.title || '练习试卷',
-        bold: true,
-        size: 32,
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 200 },
-    }));
-    children.push(new Paragraph({
-        text: `科目：${exam.subject || '不限'}    题数：${exam.total_count || exam.questions.length}    客观题：${exam.objective_count || 0}`,
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 100 },
-    }));
-    children.push(new Paragraph({
-        text: `创建人：${exam.creator_name || '系统'}    创建时间：${formatDate(exam.created_at)}`,
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 300 },
-    }));
+const finalSectionTitle = (text) => new Paragraph({
+    children: [new TextRun({ text, bold: true, size: 26, color: '000000' })],
+    spacing: { before: 200, after: 120 },
+});
 
-    exam.questions.forEach((q, index) => {
-        children.push(new Paragraph({
-            children: [new TextRun({ text: `${index + 1}. ${q.题目}`, bold: true })],
-            spacing: { before: 160, after: 80 },
-        }));
-        if (q.选项) {
-            splitLines(q.选项).forEach((line) => {
-                children.push(new Paragraph({
-                    children: [new TextRun({ text: line })],
-                    indent: { left: 480 },
-                    spacing: { after: 40 },
-                }));
-            });
-        }
-        if (!withAnswers && [5, 6].includes(Number(q.题型))) {
-            children.push(new Paragraph({ text: '', spacing: { after: 200 } }));
-        }
+const createScoreTable = () => {
+    const cells = ['题号', '一', '二', '三', '四', '五', '六', '七', '总分'];
+    const row = (values) => new TableRow({ children: values.map((text) => new TableCell({
+        children: [new Paragraph({ children: [new TextRun({ text, size: 20 })], alignment: AlignmentType.CENTER })],
+    })) });
+    return new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [row(cells), row(['得分', '', '', '', '', '', '', '', ''])],
+    });
+};
+
+const SCORE_RULES = {
+    1: { numeral: '一', name: '判断题', score: 1 },
+    2: { numeral: '二', name: '单选题', score: 1 },
+    3: { numeral: '三', name: '多选题', score: 2 },
+    4: { numeral: '四', name: '填空题', score: 1 },
+    5: { numeral: '五', name: '问答题', score: 10 },
+    6: { numeral: '七', name: '程序题', score: 10 },
+};
+
+const isAiFoundation = (exam) => String(exam.subject || '').replace(/\s/g, '').includes('人工智能基础');
+
+const buildQuestionSections = (exam) => {
+    const grouped = exam.questions.reduce((result, question) => {
+        const type = Number(question.题型);
+        if (!result[type]) result[type] = [];
+        result[type].push(question);
+        return result;
+    }, {});
+    const sections = [];
+    [1, 2, 3, 4, 5].forEach((type) => {
+        const questions = grouped[type] || [];
+        if (!questions.length) return;
+        const rule = SCORE_RULES[type];
+        const total = questions.length * rule.score;
+        sections.push({ title: `${rule.numeral}、${rule.name}（共${questions.length}题，每题${rule.score}分，共${total}分）`, questions });
+    });
+    const typeSix = grouped[6] || [];
+    if (isAiFoundation(exam) && typeSix.length >= 2) {
+        sections.push({ title: '六、组合题（10分）', questions: [typeSix[0]] });
+        sections.push({ title: typeSix.length === 2 ? '七、程序题（10分）' : `七、程序题（共${typeSix.length - 1}题，每题10分，共${(typeSix.length - 1) * 10}分）`, questions: typeSix.slice(1) });
+    } else if (typeSix.length) {
+        const total = typeSix.length * SCORE_RULES[6].score;
+        sections.push({ title: `七、程序题（共${typeSix.length}题，每题10分，共${total}分）`, questions: typeSix });
+    }
+    Object.entries(grouped).filter(([type]) => ![1,2,3,4,5,6].includes(Number(type))).forEach(([type, questions]) => {
+        if (questions.length) sections.push({ title: `${typeName(type)}（共${questions.length}题）`, questions });
+    });
+    return sections;
+};
+
+const buildFinalDocx = (exam, withAnswers) => {
+    const children = [
+        new Paragraph({ spacing: { before: 1000 } }),
+        finalHeading('XXX大学'),
+        finalHeading('XXX-XXX学年XX学期'),
+        finalHeading('XXX期末考试（X卷）'),
+        new Paragraph({ children: [new TextRun({ text: '考试方式：闭卷', bold: true, size: 26, color: '000000' })], alignment: AlignmentType.CENTER, spacing: { before: 180, after: 700 } }),
+        new Paragraph({ children: [new TextRun({ text: '班级：______________', size: 26 })], alignment: AlignmentType.CENTER, spacing: { after: 260 } }),
+        new Paragraph({ children: [new TextRun({ text: '姓名：______________', size: 26 })], alignment: AlignmentType.CENTER, spacing: { after: 260 } }),
+        new Paragraph({ children: [new TextRun({ text: '学号：______________', size: 26 })], alignment: AlignmentType.CENTER, spacing: { after: 700 } }),
+        createScoreTable(),
+        new Paragraph({ text: '注：请将答案填写在答题区域内。', spacing: { before: 280 } }),
+        new Paragraph({ children: [new PageBreak()] }),
+    ];
+
+    buildQuestionSections(exam).forEach((section, groupIndex) => {
+        if (groupIndex > 0) children.push(new Paragraph({ children: [new PageBreak()] }));
+        children.push(finalSectionTitle(section.title));
+        section.questions.forEach((question, questionIndex) => {
+            children.push(new Paragraph({ children: [new TextRun({ text: `${questionIndex + 1}. ${question.题目}`, size: 23 })], spacing: { before: 80, after: 70 } }));
+            splitLines(question.选项).forEach((line) => children.push(new Paragraph({ children: [new TextRun({ text: line, size: 22 })], indent: { left: 360 }, spacing: { after: 45 } })));
+            if (!withAnswers && [5, 6].includes(Number(question.题型))) children.push(new Paragraph({ text: '', spacing: { after: 360 } }));
+        });
     });
 
     if (withAnswers) {
         children.push(new Paragraph({ children: [new PageBreak()] }));
-        children.push(new Paragraph({
-            text: '参考答案与解析',
-            bold: true,
-            size: 28,
-            alignment: AlignmentType.CENTER,
-            spacing: { after: 200 },
-        }));
-        exam.questions.forEach((q, index) => {
-            children.push(new Paragraph({
-                children: [new TextRun({ text: `${index + 1}. 答案：${q.答案 || '略'}`, bold: true })],
-                spacing: { before: 120, after: 60 },
-            }));
-            if (q.解析) {
-                children.push(new Paragraph({
-                    children: [new TextRun({ text: `解析：${q.解析}` })],
-                    indent: { left: 240 },
-                    spacing: { after: 80 },
-                }));
-            }
+        children.push(new Paragraph({ children: [new TextRun({ text: '参考答案与解析', bold: true, size: 30, color: '000000' })], alignment: AlignmentType.CENTER, spacing: { after: 220 } }));
+        exam.questions.forEach((question, index) => {
+            children.push(new Paragraph({ children: [new TextRun({ text: `${index + 1}. 答案：${question.答案 || '略'}`, bold: true })], spacing: { before: 100, after: 50 } }));
+            if (question.解析) children.push(new Paragraph({ children: [new TextRun({ text: `解析：${question.解析}` })], indent: { left: 240 }, spacing: { after: 70 } }));
         });
     }
-
     return new Document({ sections: [{ children }] });
 };
+
+const buildDocx = (exam, withAnswers) => buildFinalDocx(exam, withAnswers);
 
 const buildExcel = (exam, withAnswers) => {
     const headers = ['序号', 'ID', '题型', '题目', '选项'];

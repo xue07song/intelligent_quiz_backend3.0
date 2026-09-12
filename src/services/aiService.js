@@ -169,7 +169,7 @@ const smartGenerateExam = async (user, options) => {
     }
 
     // 取学生近期统计（错题分布、薄弱题型）
-    const stats = await practiceModel.getStatistics(userId);
+    const stats = await practiceModel.getStatistics(user.id);
     const byType = stats.byType || []; // [{question_type, total, correct, accuracy}]
 
     // 让 AI 给出组卷策略（题型分布建议）
