@@ -402,7 +402,8 @@ const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, sub
         `SELECT COUNT(*) total FROM exams e INNER JOIN users u ON u.id=e.user_id ${where}`, params
     );
     const [rows] = await pool.query(
-        `SELECT e.*, u.nickname creator_name, u.username creator_username, u.role creator_role,
+        `SELECT e.*, COALESCE(NULLIF(TRIM(u.nickname), ''), u.username) creator_name,
+                u.username creator_username, u.role creator_role,
                 (SELECT COUNT(*) FROM exam_records r WHERE r.exam_id=e.id) attempt_count,
                 (SELECT GROUP_CONCAT(ec.class_id) FROM exam_classes ec WHERE ec.exam_id=e.id) AS class_ids
          FROM exams e INNER JOIN users u ON u.id=e.user_id ${where}
@@ -418,7 +419,7 @@ const findExamsByScope = async (userId, userRole, { page = 1, pageSize = 20, sub
 // 查询试卷详情（含题目列表，带题库原题信息 + 多选班级列表）
 const findExamById = async (examId) => {
     const [examRows] = await pool.query(
-        'SELECT e.*, u.role creator_role, u.nickname creator_name FROM `exams` e LEFT JOIN users u ON u.id=e.user_id WHERE e.id = ?', [examId]
+        "SELECT e.*, u.role creator_role, COALESCE(NULLIF(TRIM(u.nickname), ''), u.username) creator_name, u.username creator_username FROM `exams` e LEFT JOIN users u ON u.id=e.user_id WHERE e.id = ?", [examId]
     );
     if (examRows.length === 0) return null;
     const exam = examRows[0];
