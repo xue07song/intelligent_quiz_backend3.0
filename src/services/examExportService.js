@@ -289,7 +289,14 @@ const buildFinalDocx = (exam, withAnswers) => {
     const sections = buildQuestionSections(exam);
     const sectionCount = sections.length || 7;
     const subjectName = exam.subject || '计算机导论';
-    const semester = getCurrentSemester();
+    const nature = exam.examNature || {};
+    const university = nature.university || 'XXXX大学';
+    const semester = nature.yearStart && nature.yearEnd
+        ? `${nature.yearStart}—${nature.yearEnd}学年${nature.semester || '秋季'}学期`
+        : getCurrentSemester();
+    const examPrefix = nature.examPrefix || subjectName;
+    const paperType = nature.paperType || 'A';
+    const examMethod = nature.examMethod || '闭卷';
     const BLUE = '1F4E79';
 
     const coverHeading = (text, size, line, before = 0, after = 0) => new Paragraph({
@@ -316,15 +323,15 @@ const buildFinalDocx = (exam, withAnswers) => {
     });
 
     const children = [
-        coverHeading('中国XXXX大学', 28, 480, 2000, 60),
+        coverHeading(university, 28, 480, 2000, 60),
         coverHeading(semester, 28, 480, 0, 60),
-        coverHeading(`《${subjectName}》期末考试试卷`, 36, 540, 0, 60),
-        coverHeading('（A卷）', 24, 420, 0, 300),
+        coverHeading(`《${examPrefix}》期末考试试卷`, 36, 540, 0, 60),
+        coverHeading(`（${paperType}卷）`, 24, 420, 0, 300),
         new Paragraph({
             children: [
                 new TextRun({ text: '考试方式：', bold: true, size: 24, color: BLUE }),
                 new TextRun({ text: '    ', bold: true, size: 24, color: BLUE }),
-                underlineRun('闭卷', 24),
+                underlineRun(examMethod, 24),
             ],
             alignment: AlignmentType.CENTER,
             spacing: { before: 200, after: 1200, line: 420, lineRule: LineRuleType.EXACT },
