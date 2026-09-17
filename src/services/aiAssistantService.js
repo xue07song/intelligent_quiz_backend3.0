@@ -258,7 +258,10 @@ const chat = async ({ userId, message, currentPage, currentQuestionId, currentEx
     const inExam = currentPage === 'practice/exam' && currentExamId;
     const blockedExamIntent = /组卷|出套卷|生成一套|生成.*试卷|帮我出.*卷|浓缩|总结|汇总.*错题|错题.*(浓缩|总结|汇总)|类似|同类|举一反三/;
     if (inExam && (blockedExamIntent.test(normalizedMessage) || examOptions)) {
-        return { type: 'text', reply: '正式考试中该功能暂不可用，交卷后可以继续使用。' };
+        // 话术原为「正式考试中该功能暂不可用…」。2026-09-15 按用户裁决改为「答题过程中」：
+        // 答题页同样承载普通练习卷（`max_attempts` 为 NULL 的那类），叫「正式考试」是误导。
+        // **只改这一句文案，判定范围一律不动** —— 仍是 `inExam && (blockedExamIntent || examOptions)`。
+        return { type: 'text', reply: '答题过程中该功能暂不可用，交卷后可以继续使用。' };
     }
 
     const navigationIntentPattern = /在哪|在哪里|怎么进|如何进|从哪里|入口|怎么用|如何用|怎么找|哪里找|在哪里看|在哪里查/;

@@ -5,9 +5,14 @@ const routes = require('./routes');
 const studentRoutes = require('./routes/student');
 const errorHandler = require('./middlewares/errorHandler');
 const { ensureCompatibleSchema } = require('./config/schemaCompatibility');
+const { ensureQuestionSeed } = require('./config/questionSeed');
 
 const app = express();
 const port = process.env.PORT || 3000;
+// 监听地址：缺省 0.0.0.0 以保持容器化部署行为不变（Docker 端口映射要求容器内监听全网卡）。
+// 便携离线部署由启动器注入 HOST=127.0.0.1，使服务默认只对本机开放；
+// 启用局域网模式时启动器会改注入 0.0.0.0。
+const host = process.env.HOST || '0.0.0.0';
 
 app.use(cors());
 app.use(express.json());
@@ -55,10 +60,11 @@ const ensureSchema = async () => {
 const start = async () => {
     await ensureSchema();
     await ensureCompatibleSchema();
+    await ensureQuestionSeed(require('./config/db'));
     warnDeployment();
-    return app.listen(port, () => {
+    return app.listen(port, host, () => {
         console.log(`🚀 智能题库后端服务已启动！`);
-        console.log(`📍 监听地址: http://localhost:${port}`);
+        console.log(`📍 监听地址: ${host}:${port}`);
         console.log(`🔌 API 前缀: http://localhost:${port}/api/v1`);
         console.log(`🖥️ 前端页面: http://localhost:${port}`);
         console.log(`📋 测试接口示例: GET http://localhost:${port}/api/v1/questions`);

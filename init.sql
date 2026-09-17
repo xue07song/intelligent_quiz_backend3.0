@@ -286,19 +286,26 @@ CREATE TABLE IF NOT EXISTS `student_classes` (
 
 -- ==================== 兼容旧库的迁移语句（幂等，可安全重复执行）====================
 
--- classes 表加 type 字段（MySQL 8.0 不支持 ADD COLUMN IF NOT EXISTS，改用安全探测）
-SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'classes' AND COLUMN_NAME = 'type');
-SET @sql = IF(@col = 0, "ALTER TABLE `classes` ADD COLUMN `type` ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '班级类型：compulsory必修 elective选修'", 'SELECT 1');
+-- MySQL 8.0/8.4 不支持 ADD COLUMN IF NOT EXISTS，改用 information_schema 探测后迁移。
+SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'classes' AND COLUMN_NAME = 'type');
+SET @sql = IF(@col = 0,
+  "ALTER TABLE `classes` ADD COLUMN `type` ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '班级类型：compulsory必修 elective选修'",
+  'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- users 表加 class_id 冗余字段
-SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'class_id');
-SET @sql = IF(@col = 0, "ALTER TABLE `users` ADD COLUMN `class_id` INT DEFAULT NULL COMMENT '主必修班ID（冗余字段，快速查询用；实际归属以 student_classes 为准）'", 'SELECT 1');
+SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'class_id');
+SET @sql = IF(@col = 0,
+  "ALTER TABLE `users` ADD COLUMN `class_id` INT DEFAULT NULL COMMENT '主必修班ID（冗余字段，快速查询用；实际归属以 student_classes 为准）'",
+  'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- student_classes 表加 type 字段
-SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_classes' AND COLUMN_NAME = 'type');
-SET @sql = IF(@col = 0, "ALTER TABLE `student_classes` ADD COLUMN `type` ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '关系类型：compulsory必修 elective选修'", 'SELECT 1');
+SET @col = (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_classes' AND COLUMN_NAME = 'type');
+SET @sql = IF(@col = 0,
+  "ALTER TABLE `student_classes` ADD COLUMN `type` ENUM('compulsory','elective') NOT NULL DEFAULT 'compulsory' COMMENT '关系类型：compulsory必修 elective选修'",
+  'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- student_classes 表去掉旧的 student_id 唯一约束（改为多对多），加 (student_id, class_id) 唯一约束

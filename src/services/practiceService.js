@@ -137,8 +137,19 @@ const previewRuleExam = async (options = {}, actor) => {
     let subjects = [];
     if (teacherSubjects !== null) {
         // 教师：如果明确指定了科目，按指定科目过滤；否则使用所有所教科目
+        //
+        // ⚠️ 这里原先**直接采纳客户端传来的科目**、不与 `teacherSubjects` 比对，
+        // 而同一个文件的 `getExamInventory`（:107）与 `resolveExamSubject`（:50）都做了成员校验
+        // —— 教师因此能预览**任意科目**的题量分布与知识点清单。
+        // 本次「教师读取范围 = 所教科目」的裁决要求各读取入口口径一致，故补齐。
+        // 注意它**本来也不泄漏题目行内容**（`buildInventory` 只回聚合数字与知识点名），
+        // 收紧的是元信息，不是正文；管理员（`teacherSubjects === null`）不受影响。
         if (subject && String(subject).trim()) {
-            subjects = [String(subject).trim()];
+            const s = String(subject).trim();
+            if (!teacherSubjects.includes(s)) {
+                throw makeError(`无权查看科目「${s}」的组卷预览，请选择您所教的科目`, 403, 40303);
+            }
+            subjects = [s];
         } else {
             subjects = teacherSubjects;
         }
@@ -703,8 +714,19 @@ const createWrongExam = async (userId, options = {}) => {
     };
 };
 
-// ===== [新增] 单题练习：根据题目ID生成练习 =====
-const startSingleQuestionPractice = async (userId, questionId) => {
+/**
+ * 单题取行 —— **按 id 直接取题库行**的入口，必须与列表口径一致。
+ *
+ * 这两条路由（`POST /practice/single-question`、`/single-question/check`）的角色是
+ * `requireRoles('student','teacher')`，而实现里**完全没有 actor**，于是：
+ *   · 返回的是**整行**（含 `答案` / `解析`）；
+ *   · 教师只要知道一个 id，就能读到**任意科目**的题目 —— 与 `GET /questions/:id`
+ *     原先那条 `question.科目 &&` 是同一个形状的旁路，只是更彻底（连科目判断都没有）。
+ *
+ * 现在补上：**教师**受所教科目约束，**学生与管理员不受影响**
+ * （学生本来就走这条路做题，管理员按裁决不受科目限制）。
+ */
+const findQuestionForActor = async (questionId, actor) => {
     const questionModel = require('../models/questionModel');
     const question = await questionModel.findById(questionId);
     if (!question) {
@@ -713,6 +735,19 @@ const startSingleQuestionPractice = async (userId, questionId) => {
         error.errorCode = 40401;
         throw error;
     }
+    const teacherSubjects = await getActorSubjects(actor);
+    if (teacherSubjects !== null) {
+        const s = question.科目 === undefined || question.科目 === null ? '' : String(question.科目).trim();
+        if (s === '' || !teacherSubjects.includes(s)) {
+            throw makeError('无权查看该题目：不在您所教科目范围内', 403, 40303);
+        }
+    }
+    return question;
+};
+
+// ===== [新增] 单题练习：根据题目ID生成练习 =====
+const startSingleQuestionPractice = async (userId, questionId, actor) => {
+    const question = await findQuestionForActor(questionId, actor);
 
     const title = `单题练习-${new Date().toLocaleString('zh-CN', { hour12: false })}`;
     const { examId, objectiveCount } = await practiceModel.createExam({
@@ -736,15 +771,8 @@ const startSingleQuestionPractice = async (userId, questionId) => {
 };
 
 // ===== 单题判题（不创建试卷，不记录） =====
-const checkSingleQuestion = async (questionId, userAnswer) => {
-    const questionModel = require('../models/questionModel');
-    const question = await questionModel.findById(questionId);
-    if (!question) {
-        const error = new Error('题目不存在');
-        error.statusCode = 404;
-        error.errorCode = 40401;
-        throw error;
-    }
+const checkSingleQuestion = async (questionId, userAnswer, actor) => {
+    const question = await findQuestionForActor(questionId, actor);
 
     // 判断答案是否正确（复用原有判题逻辑）
     const type = Number(question.题型);

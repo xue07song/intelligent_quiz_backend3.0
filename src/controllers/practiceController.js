@@ -141,7 +141,8 @@ const startSingleQuestionPractice = async (req, res, next) => {
             err.statusCode = 400;
             throw err;
         }
-        const result = await practiceService.startSingleQuestionPractice(req.user.id, questionId);
+        // 传 req.user：服务层据此对**教师**施加所教科目范围（学生/管理员不受影响）
+        const result = await practiceService.startSingleQuestionPractice(req.user.id, questionId, req.user);
         res.status(201).json(success(result, '✅ 单题练习已开始'));
     } catch (err) {
         next(err);
@@ -157,7 +158,9 @@ const checkSingleQuestion = async (req, res, next) => {
             err.statusCode = 400;
             throw err;
         }
-        const result = await practiceService.checkSingleQuestion(questionId, userAnswer);
+        // 同 startSingleQuestionPractice：这条路由 `requireRoles('student','teacher')`，
+        // 且返回的是**带答案与解析的整行**，不传 actor 就等于把题库正文对教师全开
+        const result = await practiceService.checkSingleQuestion(questionId, userAnswer, req.user);
         res.json(success(result, '判题完成'));
     } catch (err) {
         next(err);

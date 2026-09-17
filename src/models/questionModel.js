@@ -2,6 +2,33 @@ const pool = require('../config/db');
 
 const TABLE = '`题库1`';
 
+/**
+ * 教师可见行范围 —— **唯一口径**，四个读取入口（列表 / 搜索 / 统计 / 单题）共用它。
+ *
+ * 裁决：「教师只能查看**自己所教科目的**题目」。因此：
+ *   · 有科目 → `科目 IN (所教科目…)`；
+ *   · **无科目（NULL / 空串 / 缺失）→ 教师不可见**（管理员仍然可见，管理员不走这个分支）；
+ *   · **无所教科目的教师 → 看得见的行数为 0**，绝不退回全库。
+ *
+ * ⚠️ 这里与旧实现有一处**行为反转**，是本次裁决的核心：
+ * 旧写法是 `(科目 IN (…) OR 科目 IS NULL OR 科目 = '')`，把**全部无科目历史题目**
+ * 并进了每个教师的可见集合；科目数组为空时更是只剩 `(科目 IS NULL OR 科目 = '')`，
+ * 于是「没分配科目的教师」反而能看见一批题目。两者都已按裁决关闭。
+ *
+ * 注意 `1 = 0` 这个恒假条件：它与「返回空列表」等价，但走的是同一条 SQL 路径，
+ * 统计/搜索/列表四处不用各写一遍短路分支，口径不会漂。
+ *
+ * 管理员（`subjects === null`）**不调用本函数** —— 他们的可见范围不按科目收窄，
+ * 调用方必须自己判掉，避免误伤。
+ */
+const buildTeacherSubjectScope = (subjects) => {
+    if (subjects.length === 0) {
+        return { sql: '1 = 0', params: [] };
+    }
+    const placeholders = subjects.map(() => '?').join(', ');
+    return { sql: `科目 IN (${placeholders})`, params: [...subjects] };
+};
+
 const create = async (data) => {
     const [result] = await pool.query(
         `INSERT INTO ${TABLE} (id, 章节, 题型, 序号, 题目, 选项, 答案, 解析, 难度, 知识点, 使用频度, 出题人, 科目) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -39,17 +66,14 @@ const findAll = async ({ page = 1, pageSize = 20, id, 章节, 题型, 难度, �
         conditions.push('出题人 LIKE ?');
         params.push(`%${出题人}%`);
     }
-    // 科目过滤：支持单个字符串（= ）或数组（IN）。空数组表示无匹配。
+    // 科目过滤：支持单个字符串（= ）或数组（IN）。
+    // 数组分支 = 教师的行范围，口径由 buildTeacherSubjectScope 统一给出（见文件开头）。
+    // 字符串分支 = 调用方指定的单个科目，不做 NULL 并集。
     if (科目 !== undefined && 科目 !== null) {
         if (Array.isArray(科目)) {
-            if (科目.length === 0) {
-                // 兼容旧题库：尚未分配科目的教师只能看到未标注科目的历史题目
-                conditions.push("(科目 IS NULL OR 科目 = '')");
-            } else {
-                const placeholders = 科目.map(() => '?').join(', ');
-                conditions.push(`(科目 IN (${placeholders}) OR 科目 IS NULL OR 科目 = '')`);
-                params.push(...科目);
-            }
+            const scope = buildTeacherSubjectScope(科目);
+            conditions.push(scope.sql);
+            params.push(...scope.params);
         } else if (String(科目).trim() !== '') {
             conditions.push('科目 = ?');
             params.push(String(科目).trim());
@@ -175,14 +199,11 @@ const batchRemove = async (ids) => {
 const statistics = async (subjects) => {
     const conditions = [];
     const params = [];
+    // 教师（数组）→ 统一行范围；管理员传 null → 不加条件（口径与 findAll 一致）
     if (Array.isArray(subjects)) {
-        if (subjects.length === 0) {
-            conditions.push("(科目 IS NULL OR 科目 = '')");
-        } else {
-            const placeholders = subjects.map(() => '?').join(', ');
-            conditions.push(`(科目 IN (${placeholders}) OR 科目 IS NULL OR 科目 = '')`);
-            params.push(...subjects);
-        }
+        const scope = buildTeacherSubjectScope(subjects);
+        conditions.push(scope.sql);
+        params.push(...scope.params);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const subjectScope = conditions.length > 0 ? ` AND ${conditions.join(' AND ')}` : '';
@@ -236,13 +257,9 @@ const searchByKeyword = async (keyword, { page = 1, pageSize = 20, subjects } = 
     const params = [kw, kw, kw, kw];
     const conditions = ['(题目 LIKE ? OR 选项 LIKE ? OR 知识点 LIKE ? OR 解析 LIKE ?)'];
     if (Array.isArray(subjects)) {
-        if (subjects.length === 0) {
-            conditions.push("(科目 IS NULL OR 科目 = '')");
-        } else {
-            const placeholders = subjects.map(() => '?').join(', ');
-            conditions.push(`(科目 IN (${placeholders}) OR 科目 IS NULL OR 科目 = '')`);
-            params.push(...subjects);
-        }
+        const scope = buildTeacherSubjectScope(subjects);
+        conditions.push(scope.sql);
+        params.push(...scope.params);
     }
     const where = `WHERE ${conditions.join(' AND ')}`;
     const [countResult] = await pool.query(
