@@ -1,4 +1,4 @@
-const QUESTION_TYPES = [1, 2, 3, 4, 5, 6];
+const QUESTION_TYPES = [1, 2, 3, 4, 5, 6, 7];
 
 // 题库中真实存在的中文难度与数字/星级难度都允许录入
 const DIFFICULTY_VALUES = new Set([

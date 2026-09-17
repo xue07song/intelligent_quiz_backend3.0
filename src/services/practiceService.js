@@ -878,7 +878,7 @@ const adminGetRecord = async (callerRole, callerId, recordId) => {
 const reviewSubjectiveAnswer = async (reviewerId, answerId, body = {}) => {
     const answer = await practiceModel.findAnswerRecord(answerId);
     if (!answer) throw Object.assign(new Error('该答案不存在或已删除'), { statusCode: 404, errorCode: 40401 });
-    if (![4, 5, 6].includes(Number(answer.question_type))) {
+    if (![4, 5, 6, 7].includes(Number(answer.question_type))) {
         throw Object.assign(new Error('该答案不支持人工复核'), { statusCode: 404, errorCode: 40401 });
     }
     const record = await practiceModel.findRecordById(answer.record_id);
@@ -916,7 +916,7 @@ const reviewAdaptiveAnswer = async (reviewerId, answerId, body = {}) => {
     const adaptiveModel = require('../models/adaptivePracticeModel');
     const answer = await adaptiveModel.findAdaptiveAnswerById(answerId);
     if (!answer) throw makeError('自适应答题记录不存在', 404, 40401);
-    if (![4, 5, 6].includes(Number(answer.question_type))) {
+    if (![4, 5, 6, 7].includes(Number(answer.question_type))) {
         throw makeError('该题不支持人工复核', 404, 40401);
     }
     const fullScore = Math.max(0.01, Number(body.fullScore) || 1);

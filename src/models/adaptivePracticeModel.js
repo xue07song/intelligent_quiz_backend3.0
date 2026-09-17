@@ -2,8 +2,8 @@ const pool = require('../config/db');
 
 const QT_TABLE = '`题库1`';
 
-// 支持所有题型：判断 单选 多选 填空 简答 程序
-const ALL_TYPES = [1, 2, 3, 4, 5, 6];
+// 支持所有题型：判断 单选 多选 填空 简答 程序 组合
+const ALL_TYPES = [1, 2, 3, 4, 5, 6, 7];
 
 const normalizeDifficultySql = `CASE
     WHEN q.难度 REGEXP '^[1-5]$' THEN CAST(q.难度 AS UNSIGNED)
@@ -26,7 +26,7 @@ const ensureTables = async () => {
         user_id INT NOT NULL,
         chapters VARCHAR(100) DEFAULT NULL,
         knowledge_keyword VARCHAR(200) DEFAULT NULL,
-        question_types VARCHAR(50) NOT NULL DEFAULT '1,2,3,4,5,6',
+        question_types VARCHAR(50) NOT NULL DEFAULT '1,2,3,4,5,6,7',
         planned_count INT NOT NULL DEFAULT 10,
         initial_difficulty TINYINT NOT NULL DEFAULT 1,
         current_difficulty TINYINT NOT NULL DEFAULT 1,
