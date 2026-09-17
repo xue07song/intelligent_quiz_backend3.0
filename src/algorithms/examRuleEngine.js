@@ -110,7 +110,7 @@ const buildInventory = (rawQuestions) => {
         normalizedKnowledge: String(question.知识点 || '').trim(),
         usedCount: Number(question.used_count) || 0,
     }));
-    const valid = questions.filter((q) => q.normalizedType >= 1 && q.normalizedType <= 6 && q.normalizedDifficulty);
+    const valid = questions.filter((q) => q.normalizedType >= 1 && q.normalizedType <= 7 && q.normalizedDifficulty);
     const cross = {};
     valid.forEach((q) => { const key = `${q.normalizedType}-${q.normalizedDifficulty}`; cross[key] = (cross[key] || 0) + 1; });
     return {
@@ -156,16 +156,16 @@ const buildFeasibleDifficultySuggestion = (inventory, typeQuota, difficultyQuota
 
 const buildFeasibleTypeSuggestion = (inventory, typeQuota, difficultyQuota, tieOrder = 'asc') => {
     const remainingStock = { ...inventory.cross };
-    const suggested = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+    const suggested = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0 };
     const levels = Object.keys(difficultyQuota).map(Number).sort((a, b) => {
-        const aChoices = [1, 2, 3, 4, 5, 6].filter((type) => (remainingStock[`${type}-${a}`] || 0) > 0).length;
-        const bChoices = [1, 2, 3, 4, 5, 6].filter((type) => (remainingStock[`${type}-${b}`] || 0) > 0).length;
+        const aChoices = [1, 2, 3, 4, 5, 6, 7].filter((type) => (remainingStock[`${type}-${a}`] || 0) > 0).length;
+        const bChoices = [1, 2, 3, 4, 5, 6, 7].filter((type) => (remainingStock[`${type}-${b}`] || 0) > 0).length;
         return aChoices - bChoices;
     });
 
     for (const level of levels) {
         for (let index = 0; index < difficultyQuota[level]; index += 1) {
-            const available = [1, 2, 3, 4, 5, 6].filter((type) => (remainingStock[`${type}-${level}`] || 0) > 0);
+            const available = [1, 2, 3, 4, 5, 6, 7].filter((type) => (remainingStock[`${type}-${level}`] || 0) > 0);
             if (!available.length) return null;
             available.sort((a, b) => {
                 const aGap = (typeQuota[a] || 0) - suggested[a];
@@ -207,7 +207,7 @@ const buildAlternativePlans = (questions, inventory, count, typeQuota, difficult
         addPlan({
             id: `keep-difficulty-${index + 1}`,
             title: index === 0 ? '优先保留难度结构' : '保留难度的另一种搭配',
-            description: '五级难度数量不变，只调整六种题型数量',
+            description: '五级难度数量不变，只调整七种题型数量',
             typeDistribution,
             difficultyDistribution: { ...difficultyQuota },
             changedField: 'type',
@@ -218,7 +218,7 @@ const buildAlternativePlans = (questions, inventory, count, typeQuota, difficult
 };
 
 const analyzeRuleExamConfiguration = ({ rawQuestions, count, typeDistribution, difficultyDistribution, minKnowledgePoints = 1 }) => {
-    const typeQuota = normalizeDistribution(typeDistribution, 1, 6);
+    const typeQuota = normalizeDistribution(typeDistribution, 1, 7);
     const difficultyQuota = normalizeDistribution(difficultyDistribution, 1, 5);
     const { questions, report: inventory } = buildInventory(rawQuestions);
     const checks = {
@@ -289,7 +289,7 @@ const analyzeRuleExamConfiguration = ({ rawQuestions, count, typeDistribution, d
 };
 
 const assembleRuleExam = ({ rawQuestions, count, typeDistribution, difficultyDistribution, minKnowledgePoints = 1 }) => {
-    const typeQuota = normalizeDistribution(typeDistribution, 1, 6);
+    const typeQuota = normalizeDistribution(typeDistribution, 1, 7);
     const difficultyQuota = normalizeDistribution(difficultyDistribution, 1, 5);
     if (sumValues(typeQuota) !== count) throw Object.assign(new Error(`题型数量合计必须等于总题数 ${count}`), { statusCode: 400, errorCode: 40003 });
     if (sumValues(difficultyQuota) !== count) throw Object.assign(new Error(`难度数量合计必须等于总题数 ${count}`), { statusCode: 400, errorCode: 40004 });

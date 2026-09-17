@@ -3,9 +3,9 @@ const practiceModel = require('../models/practiceModel'); // ===== [新增] ====
 const { difficultyGroup, evaluateDifficulty } = require('../algorithms/difficultyAdjustment');
 const subjectiveEvaluation = require('./subjectiveEvaluationService');
 
-// 现在支持所有 6 种题型：判断(1)/单选(2)/多选(3)/填空(4)/简答(5)/程序(6)
-// 客观题为 1/2/3（可 100% 自动判分且立刻出对错），4/5/6 填空/简答/程序走统一评阅（correct/partial/incorrect/review）
-const ALL_TYPES = [1, 2, 3, 4, 5, 6];
+// 现在支持所有 7 种题型：判断(1)/单选(2)/多选(3)/填空(4)/简答(5)/程序(6)/组合(7)
+// 客观题为 1/2/3（可 100% 自动判分且立刻出对错），4/5/6/7 填空/简答/程序/组合走统一评阅（correct/partial/incorrect/review）
+const ALL_TYPES = [1, 2, 3, 4, 5, 6, 7];
 
 const normalizeOptions = (raw = {}) => {
     const subject = String(raw.subject || '').trim();

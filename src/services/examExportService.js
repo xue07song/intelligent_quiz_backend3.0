@@ -32,6 +32,7 @@ const TYPE_NAMES = {
     4: '填空题',
     5: '简答题',
     6: '程序论述题',
+    7: '组合题',
 };
 
 const cleanFilename = (name) => String(name || '试卷').replace(/[\\/:*?"<>|]/g, '_').trim() || '试卷';
@@ -236,12 +237,13 @@ const createScoreTable = (sectionCount = 7) => {
 };
 
 const SCORE_RULES = {
-    1: { numeral: '一', name: '判断题', score: 1 },
-    2: { numeral: '二', name: '单选题', score: 1 },
-    3: { numeral: '三', name: '多选题', score: 2 },
-    4: { numeral: '四', name: '填空题', score: 1 },
-    5: { numeral: '五', name: '问答题', score: 10 },
-    6: { numeral: '六', name: '程序题', score: 10 },
+    1: { name: '判断题', score: 1 },
+    2: { name: '单选题', score: 1 },
+    3: { name: '多选题', score: 2 },
+    4: { name: '填空题', score: 1 },
+    5: { name: '问答题', score: 10 },
+    6: { name: '程序题', score: 10 },
+    7: { name: '组合题', score: 10 },
 };
 
 const isAiFoundation = (exam) => String(exam.subject || '').replace(/\s/g, '').includes('人工智能基础');
@@ -259,20 +261,27 @@ const buildQuestionSections = (exam) => {
         if (!questions.length) return;
         const rule = SCORE_RULES[type];
         const total = questions.length * rule.score;
-        sections.push({ title: `${rule.numeral}、${rule.name}（共${questions.length}题，每题${rule.score}分，共${total}分）`, questions });
+        sections.push({ title: `${rule.name}（共${questions.length}题，每题${rule.score}分，共${total}分）`, questions });
     });
-    const typeSix = grouped[6] || [];
-    if (isAiFoundation(exam) && typeSix.length >= 2) {
-        sections.push({ title: '六、组合题（10分）', questions: [typeSix[0]] });
-        sections.push({ title: typeSix.length === 2 ? '七、程序题（10分）' : `七、程序题（共${typeSix.length - 1}题，每题10分，共${(typeSix.length - 1) * 10}分）`, questions: typeSix.slice(1) });
-    } else if (typeSix.length) {
-        const total = typeSix.length * SCORE_RULES[6].score;
-        sections.push({ title: `六、程序题（共${typeSix.length}题，每题${SCORE_RULES[6].score}分，共${total}分）`, questions: typeSix });
+    const typeSeven = grouped[7] || [];
+    if (typeSeven.length) {
+        const rule = SCORE_RULES[7];
+        const total = typeSeven.length * rule.score;
+        sections.push({ title: `${rule.name}（共${typeSeven.length}题，每题${rule.score}分，共${total}分）`, questions: typeSeven });
     }
-    Object.entries(grouped).filter(([type]) => ![1,2,3,4,5,6].includes(Number(type))).forEach(([type, questions]) => {
+    const typeSix = grouped[6] || [];
+    if (typeSix.length) {
+        const rule = SCORE_RULES[6];
+        const total = typeSix.length * rule.score;
+        sections.push({ title: `${rule.name}（共${typeSix.length}题，每题${rule.score}分，共${total}分）`, questions: typeSix });
+    }
+    Object.entries(grouped).filter(([type]) => ![1,2,3,4,5,6,7].includes(Number(type))).forEach(([type, questions]) => {
         if (questions.length) sections.push({ title: `${typeName(type)}（共${questions.length}题）`, questions });
     });
-    return sections;
+    return sections.map((section, index) => ({
+        ...section,
+        title: `${CHINESE_NUMERALS[index] || index + 1}、${section.title}`,
+    }));
 };
 
 const getCurrentSemester = () => {
@@ -389,7 +398,7 @@ const buildFinalDocx = (exam, withAnswers) => {
                     indent: { left: 360 },
                     spacing: { after: 45 },
                 })));
-                if (!withAnswers && [5, 6].includes(qType)) children.push(new Paragraph({ text: '', spacing: { after: 360 } }));
+                if (!withAnswers && [5, 6, 7].includes(qType)) children.push(new Paragraph({ text: '', spacing: { after: 360 } }));
             }
         });
     });
