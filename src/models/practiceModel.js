@@ -188,7 +188,7 @@ const isExamVisibleToStudentClasses = async (examId, classIdsFromStudent, studen
 // 创建试卷（事务：写 exams + exam_questions + 可选 exam_classes）
 const createExam = async ({
     userId, title, chapter, questionType, difficulty, questions, subject, classId, classIds,
-    status, durationMinutes, startAt, endAt, maxAttempts,
+    status, durationMinutes, startAt, endAt, maxAttempts, examNature,
 }) => {
     // 兼容：若只传了 classId，转成 [classId]；若传了 classIds，以 classIds 为准
     const targetClassIds = Array.isArray(classIds) && classIds.length > 0
@@ -205,13 +205,13 @@ const createExam = async ({
         const [examResult] = await conn.query(
             `INSERT INTO \`exams\`
              (user_id, title, total_count, objective_count, chapter, question_type, difficulty,
-              subject, class_id, status, duration_minutes, start_at, end_at, max_attempts)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              subject, class_id, status, duration_minutes, start_at, end_at, max_attempts, exam_nature)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 userId, title, questions.length, objectiveCount, chapter || null,
                 questionType || null, difficulty || null, subject || null, legacyClassId,
                 status || 'published', durationMinutes || null, startAt || null, endAt || null,
-                maxAttempts || null,
+                maxAttempts || null, examNature ? JSON.stringify(examNature) : null,
             ]
         );
         const examId = examResult.insertId;
