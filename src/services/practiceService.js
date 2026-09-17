@@ -169,6 +169,7 @@ const generateRuleExam = async (userId, options = {}, actor) => {
         title, chapters = [], count = 20,
         typeDistribution, difficultyDistribution, minKnowledgePoints = 1,
         subject, classId, classIds, status, durationMinutes, startAt, endAt, maxAttempts, knowledgePoints = [],
+        examNature,
     } = options;
     const numCount = Number(count);
     if (!Number.isInteger(numCount) || numCount < 1 || numCount > 100) {
@@ -217,6 +218,7 @@ const generateRuleExam = async (userId, options = {}, actor) => {
         startAt,
         endAt,
         maxAttempts,
+        examNature,
     });
     return { examId, title: examTitle, total: questions.length, objectiveCount, report, questions, classIds: savedClassIds };
 };
@@ -280,6 +282,9 @@ const getExam = async (examId, userId, userRole = 'student') => {
     const canView = exam.user_id === userId || userRole === 'admin' || (userRole === 'student' && exam.creator_role === 'teacher');
     if (!canView) {
         throw makeError('无权查看此试卷', 403, 40301);
+    }
+    if (exam.exam_nature) {
+        exam.examNature = typeof exam.exam_nature === 'string' ? JSON.parse(exam.exam_nature) : exam.exam_nature;
     }
     if (userRole === 'student') {
         return sanitizeExamForStudent(exam);
